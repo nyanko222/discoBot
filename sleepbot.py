@@ -117,24 +117,20 @@ class GenderRoomView(discord.ui.View):
 
     @discord.ui.button(label="男性のみ", style=discord.ButtonStyle.primary)
     async def male_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = RoomCreationModal(gender="male", original_interaction=interaction)
+        modal = RoomCreationModal(gender="male")
         await interaction.response.send_modal(modal)
-        self.disable_all_items()
-        await interaction.message.edit(view=self)
+        # ※ ここで「self.disable_all_items()」や「edit_message」は行わない。
+        #    なぜなら、モーダルを送信した時点でInteractionは応答済みになるため。
 
     @discord.ui.button(label="女性のみ", style=discord.ButtonStyle.danger)
     async def female_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = RoomCreationModal(gender="female", original_interaction=interaction)
+        modal = RoomCreationModal(gender="female")
         await interaction.response.send_modal(modal)
-        self.disable_all_items()
-        await interaction.message.edit(view=self)
 
     @discord.ui.button(label="どちらでもOK", style=discord.ButtonStyle.secondary)
     async def both_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = RoomCreationModal(gender="all", original_interaction=interaction)
+        modal = RoomCreationModal(gender="all")
         await interaction.response.send_modal(modal)
-        self.disable_all_items()
-        await interaction.message.edit(view=self)
 
 def add_room(text_channel_id, voice_channel_id, creator_id, role_id):
     with get_db_connection() as conn:
@@ -189,11 +185,9 @@ def get_room_info(channel_id):
 
 # ① 新規追加: ユーザー入力用の Modal クラス
 class RoomCreationModal(discord.ui.Modal, title="部屋作成メッセージ入力"):
-    def __init__(self, gender: str, original_interaction: discord.Interaction):
+    def __init__(self, gender: str):
         super().__init__()
         self.gender = gender
-        self.original_interaction = original_interaction
-
     room_message = discord.ui.TextInput(
         label="募集の詳細 (任意, 最大200文字)",
         style=discord.TextStyle.paragraph,
@@ -204,8 +198,13 @@ class RoomCreationModal(discord.ui.Modal, title="部屋作成メッセージ入�
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        # モーダル送信後、元の interaction を使って部屋作成処理を呼び出す
-        await create_room_with_gender(self.original_interaction, self.gender, room_message=self.room_message.value)
+           # ここで「ボタンクリック時の interaction」を使わず、
+        # モーダルの submit 用 interaction をそのまま渡す
+        await create_room_with_gender(
+            interaction,
+            self.gender,
+            room_message=self.room_message.value
+        )
 
 
 @bot.event
@@ -238,7 +237,7 @@ async def setup_lobby(interaction: discord.Interaction):
 async def blacklist_add(interaction: discord.Interaction, user: discord.Member, reason: str = "理由なし"):
     """ユーザーをブラックリストに追加"""
     if user.id == interaction.user.id:
-        await interaction.response.send_message("❌ 自分自身をブラックリストに追加することはできません。", ephemeral=True)
+        await interaction.response.send_message(" 自分自身をブラックリストに追加することはできません。", ephemeral=True)
         return
     add_to_blacklist(interaction.user.id, user.id, reason)
     add_admin_log("ブラックリスト追加", interaction.user.id, user.id, reason)
@@ -254,7 +253,7 @@ async def blacklist_remove(interaction: discord.Interaction, user: discord.Membe
         add_admin_log("ブラックリスト削除", interaction.user.id, user.id)
         await interaction.response.send_message(f"✅ {user.mention} をあなたのブラックリストから削除しました。", ephemeral=True)
     else:
-        await interaction.response.send_message(f"❌ {user.mention} はあなたのブラックリストに登録されていません。", ephemeral=True)
+        await interaction.response.send_message(f" {user.mention} はあなたのブラックリストに登録されていません。", ephemeral=True)
 
 @bot.tree.command(name="bl-list", description="自分のブラックリストに登録されているユーザー一覧を表示")
 async def blacklist_list(interaction: discord.Interaction):
@@ -272,10 +271,15 @@ async def blacklist_list(interaction: discord.Interaction):
         await interaction.user.send(embed=embed)
         await interaction.response.send_message("✅ DMでブラックリストを送信しました。", ephemeral=True)
     except:
-        await interaction.response.send_message("❌ DMを送信できませんでした。DMが許可されているか確認してください。", ephemeral=True)
+        await interaction.response.send_message(" DMを送信できませんでした。DMが許可されているか確認してください。", ephemeral=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-async def create_room_with_gender(interaction: discord.Interaction, gender: str, capacity: int = 2):
+async def create_room_with_gender(
+        interaction: discord.Interaction, 
+        gender: str, 
+        capacity: int = 2, 
+        room_message: str = "" 
+        ):
     """
     ボタンが押された際に実行される部屋作成ロジック。
     gender: 'male', 'female', 'all'
@@ -285,7 +289,7 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
     existing_rooms = get_rooms_by_creator(interaction.user.id)
     if existing_rooms:
         await interaction.response.send_message(
-            "❌ すでに部屋を作成しています。新しい部屋を作成する前に、既存の部屋を削除してください。",
+            " すでに部屋を作成しています。新しい部屋を作成する前に、既存の部屋を削除してください。",
             ephemeral=True
         )
         return
@@ -338,7 +342,7 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         logger.info(f"非表示ロール '{role_name}' を作成しました")
     except Exception as e:
         logger.error(f"非表示ロールの作成に失敗: {str(e)}")
-        await interaction.response.send_message(f"❌ ロールの作成に失敗しました: {str(e)}", ephemeral=True)
+        await interaction.response.send_message(f" ロールの作成に失敗しました: {str(e)}", ephemeral=True)
         return
 
     # ブラックリストユーザにロールを付与する処理
@@ -379,10 +383,10 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         )
                 # ③ ユーザーが入力したメッセージがある場合、テキストチャンネルに送信
         if room_message:
-            await text_channel.send(f"📝 募集の詳細: {room_message}")
+            await text_channel.send(f"📝 募集の詳細\n {room_message}")
     except Exception as e:
         logger.error(f"部屋の作成に失敗: {str(e)}")
-        await interaction.response.send_message(f"❌ 部屋の作成に失敗しました: {str(e)}", ephemeral=True)
+        await interaction.response.send_message(f" 部屋の作成に失敗しました: {str(e)}", ephemeral=True)
         try:
             await hidden_role.delete()
             logger.info(f"エラーのためロール '{role_name}' を削除しました")
@@ -394,10 +398,10 @@ async def delete_room(interaction: discord.Interaction):
     """寝落ち募集部屋を削除"""
     creator_id, role_id, text_channel_id, voice_channel_id = get_room_info(interaction.channel.id)
     if creator_id is None:
-        await interaction.response.send_message("❌ このコマンドは寝落ち募集部屋でのみ使用できます。", ephemeral=True)
+        await interaction.response.send_message(" このコマンドは寝落ち募集部屋でのみ使用できます。", ephemeral=True)
         return
     if creator_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ 部屋の作成者または管理者のみが部屋を削除できます。", ephemeral=True)
+        await interaction.response.send_message(" 部屋の作成者または管理者のみが部屋を削除できます。", ephemeral=True)
         return
     await interaction.response.send_message("部屋を削除しています...", ephemeral=True)
     try:
@@ -548,14 +552,14 @@ async def sync(interaction: discord.Interaction):
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
-        await ctx.send("❌ コマンドの引数が不足しています。`/bot-help` でヘルプを確認してください。", ephemeral=True)
+        await ctx.send(" コマンドの引数が不足しています。`/bot-help` でヘルプを確認してください。", ephemeral=True)
     elif isinstance(error, commands.errors.MissingPermissions):
-        await ctx.send("❌ このコマンドを実行する権限がありません。", ephemeral=True)
+        await ctx.send(" このコマンドを実行する権限がありません。", ephemeral=True)
     elif isinstance(error, commands.errors.CommandNotFound):
         pass
     else:
         logger.error(f"コマンドエラー: {str(error)}")
-        await ctx.send(f"❌ エラーが発生しました: {str(error)}", ephemeral=True)
+        await ctx.send(f" エラーが発生しました: {str(error)}", ephemeral=True)
 
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
