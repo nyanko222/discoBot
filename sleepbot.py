@@ -396,37 +396,59 @@ async def create_room_with_gender(
 
 @bot.tree.command(name="delete-room", description="通話募集部屋を削除")
 async def delete_room(interaction: discord.Interaction):
-    """通話募集部屋を削除"""
     creator_id, role_id, text_channel_id, voice_channel_id = get_room_info(interaction.channel.id)
     if creator_id is None:
-        await interaction.response.send_message(" このコマンドは通話募集部屋でのみ使用できます。", ephemeral=True)
+        await interaction.response.send_message("このコマンドは通話募集部屋でのみ使用できます。", ephemeral=True)
         return
     if creator_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message(" 部屋の作成者または管理者のみが部屋を削除できます。", ephemeral=True)
+        await interaction.response.send_message("部屋の作成者または管理者のみが部屋を削除できます。", ephemeral=True)
         return
+
     await interaction.response.send_message("部屋を削除しています...", ephemeral=True)
-    try:
-        if text_channel_id:
-            text_channel = interaction.guild.get_channel(text_channel_id)
-            if text_channel and text_channel.id != interaction.channel.id:
-                await text_channel.delete()
-                logger.info(f"テキストチャンネル {text_channel_id} を削除しました")
-        if voice_channel_id:
-            voice_channel = interaction.guild.get_channel(voice_channel_id)
-            if voice_channel:
+
+    # ---- テキストチャンネル削除 ----
+    if text_channel_id:
+        text_channel = interaction.guild.get_channel(text_channel_id)
+        if text_channel:
+            # 現在のチャンネルと同じ場合は後で削除
+            if text_channel.id != interaction.channel.id:
+                try:
+                    await text_channel.delete()
+                    logger.info(f"テキストチャンネル {text_channel_id} を削除しました")
+                except Exception as e:
+                    logger.error(f"テキストチャンネル {text_channel_id} の削除に失敗: {e}")
+
+    # ---- ボイスチャンネル削除 ----
+    if voice_channel_id:
+        voice_channel = interaction.guild.get_channel(voice_channel_id)
+        if voice_channel:
+            try:
                 await voice_channel.delete()
                 logger.info(f"ボイスチャンネル {voice_channel_id} を削除しました")
-        if role_id:
-            role = interaction.guild.get_role(role_id)
-            if role:
+            except Exception as e:
+                logger.error(f"ボイスチャンネル {voice_channel_id} の削除に失敗: {e}")
+
+    # ---- ロール削除 ----
+    if role_id:
+        role = interaction.guild.get_role(role_id)
+        if role:
+            try:
                 await role.delete()
                 logger.info(f"ロール {role_id} を削除しました")
-        if interaction.channel.id == text_channel_id:
+            except Exception as e:
+                logger.error(f"ロール {role_id} の削除に失敗: {e}")
+
+    # ---- 最後に「現在のチャンネル」だった場合の削除 ----
+    if interaction.channel.id == text_channel_id:
+        try:
             await interaction.channel.delete()
             logger.info(f"現在のチャンネル {interaction.channel.id} を削除しました")
-        add_admin_log("部屋削除", interaction.user.id, creator_id, f"テキスト:{text_channel_id} ボイス:{voice_channel_id}")
-    except Exception as e:
-        logger.error(f"部屋の削除に失敗: {str(e)}")
+        except Exception as e:
+            logger.error(f"現在のチャンネル {interaction.channel.id} の削除に失敗: {e}")
+
+    # ---- roomsテーブルからも削除（remove_room） ----
+    remove_room(text_channel_id=text_channel_id)  # or voice_channel_id=... whichever
+    add_admin_log("部屋削除", interaction.user.id, creator_id, f"テキスト:{text_channel_id} ボイス:{voice_channel_id}")
 
 @bot.event
 async def on_guild_channel_delete(channel):
