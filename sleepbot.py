@@ -110,27 +110,31 @@ def get_blacklist(owner_id):
     return blacklist
 
 # 部屋管理機能
+# ④ GenderRoomView 内の各ボタン処理を変更し、Modal を表示するようにする
 class GenderRoomView(discord.ui.View):
     def __init__(self, timeout=None):
         super().__init__(timeout=timeout)
 
     @discord.ui.button(label="男性のみ", style=discord.ButtonStyle.primary)
     async def male_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await create_room_with_gender(interaction, gender="male")
+        modal = RoomCreationModal(gender="male", original_interaction=interaction)
+        await interaction.response.send_modal(modal)
         self.disable_all_items()
-        await interaction.response.edit_message(view=self)
+        await interaction.message.edit(view=self)
 
     @discord.ui.button(label="女性のみ", style=discord.ButtonStyle.danger)
     async def female_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await create_room_with_gender(interaction, gender="female")
+        modal = RoomCreationModal(gender="female", original_interaction=interaction)
+        await interaction.response.send_modal(modal)
         self.disable_all_items()
-        await interaction.response.edit_message(view=self)
+        await interaction.message.edit(view=self)
 
     @discord.ui.button(label="どちらでもOK", style=discord.ButtonStyle.secondary)
     async def both_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await create_room_with_gender(interaction, gender="all")
+        modal = RoomCreationModal(gender="all", original_interaction=interaction)
+        await interaction.response.send_modal(modal)
         self.disable_all_items()
-        await interaction.response.edit_message(view=self)
+        await interaction.message.edit(view=self)
 
 def add_room(text_channel_id, voice_channel_id, creator_id, role_id):
     with get_db_connection() as conn:
@@ -183,6 +187,27 @@ def get_room_info(channel_id):
         return None, None, None, None
     return result
 
+# ① 新規追加: ユーザー入力用の Modal クラス
+class RoomCreationModal(discord.ui.Modal, title="部屋作成メッセージ入力"):
+    def __init__(self, gender: str, original_interaction: discord.Interaction):
+        super().__init__()
+        self.gender = gender
+        self.original_interaction = original_interaction
+
+    room_message = discord.ui.TextInput(
+        label="募集の詳細 (任意, 最大200文字)",
+        style=discord.TextStyle.paragraph,
+        max_length=200,
+        required=False,
+        default="【いつから】\n【いつまで】\n【目的】\n【NG】\n【一言】",
+        placeholder="ここに募集の詳細を入力してください (省略可)"
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # モーダル送信後、元の interaction を使って部屋作成処理を呼び出す
+        await create_room_with_gender(self.original_interaction, self.gender, room_message=self.room_message.value)
+
+
 @bot.event
 async def on_ready():
     logger.info(f'BOTにログインしました: {bot.user.name}')
@@ -199,8 +224,8 @@ async def setup_lobby(interaction: discord.Interaction):
     """管理者向け: ボタン付きメッセージをチャンネルに設置"""
     view = GenderRoomView(timeout=None)
     text = (
-        "**【部屋作成ボタン】**\n"
-        "男性のみ・女性のみ・どちらでもOK、いずれかのボタンを押すと部屋が作成されます。\n募集を見せたい性別を選んでください！"
+        "**【募集開始ボタン】**\n"
+        "男性のみ・女性のみ・どちらでもOK、いずれかのボタンを押すと募集が開始されます。\n募集を見せたい性別を選んでください！"
     )
     await interaction.channel.send(text, view=view)
     await interaction.response.send_message("部屋作成ボタン付きメッセージを設置しました！", ephemeral=True)
@@ -254,6 +279,7 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
     """
     ボタンが押された際に実行される部屋作成ロジック。
     gender: 'male', 'female', 'all'
+    room_message: ユーザーが入力した任意のメッセージ（最大200文字）
     """
     # 既に部屋があるかチェック
     existing_rooms = get_rooms_by_creator(interaction.user.id)
@@ -351,6 +377,9 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         await text_channel.send(
             f"🎉 {interaction.user.mention} の寝落ち募集部屋へようこそ！\n部屋の作成者は`/delete-room` コマンドでこの部屋を削除できます。"
         )
+                # ③ ユーザーが入力したメッセージがある場合、テキストチャンネルに送信
+        if room_message:
+            await text_channel.send(f"📝 募集の詳細: {room_message}")
     except Exception as e:
         logger.error(f"部屋の作成に失敗: {str(e)}")
         await interaction.response.send_message(f"❌ 部屋の作成に失敗しました: {str(e)}", ephemeral=True)
@@ -571,4 +600,3 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
 TOKEN = os.getenv('DISCORD_TOKEN')
 bot.run(TOKEN)
 
-#test
