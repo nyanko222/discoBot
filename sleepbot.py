@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+from dotenv import load_dotenv
 import sqlite3
 import os
 from datetime import datetime
@@ -294,8 +295,8 @@ async def create_room_with_gender(
         )
         return
 
-    room_name = f"{interaction.user.display_name}の寝落ち募集"
-    category_name = f"{interaction.user.display_name}の寝落ち募集"
+    room_name = f"{interaction.user.display_name}の通話募集"
+    category_name = f"{interaction.user.display_name}の通話募集-{interaction.user.id}"
     category = discord.utils.get(interaction.guild.categories, name=category_name)
     if not category:
         category = await interaction.guild.create_category(category_name)
@@ -376,10 +377,10 @@ async def create_room_with_gender(
         add_room(text_channel.id, voice_channel.id, interaction.user.id, hidden_role.id)
         add_admin_log("部屋作成", interaction.user.id, None, f"テキスト:{text_channel.id} ボイス:{voice_channel.id}")
         await interaction.response.send_message(
-            f"✅ 寝落ち募集部屋を作成しました！\nテキスト: {text_channel.mention}\nボイス: {voice_channel.mention}", ephemeral=True
+            f"✅ 通話募集部屋を作成しました！\nテキスト: {text_channel.mention}\nボイス: {voice_channel.mention}", ephemeral=True
         )
         await text_channel.send(
-            f"🎉 {interaction.user.mention} の寝落ち募集部屋へようこそ！\n部屋の作成者は`/delete-room` コマンドでこの部屋を削除できます。"
+            f"🎉 {interaction.user.mention} の通話募集部屋へようこそ！\n部屋の作成者は`/delete-room` コマンドでこの部屋を削除できます。"
         )
                 # ③ ユーザーが入力したメッセージがある場合、テキストチャンネルに送信
         if room_message:
@@ -393,12 +394,12 @@ async def create_room_with_gender(
         except Exception as e_del:
             logger.error(f"エラー後のロール削除に失敗: {str(e_del)}")
 
-@bot.tree.command(name="delete-room", description="寝落ち募集部屋を削除")
+@bot.tree.command(name="delete-room", description="通話募集部屋を削除")
 async def delete_room(interaction: discord.Interaction):
-    """寝落ち募集部屋を削除"""
+    """通話募集部屋を削除"""
     creator_id, role_id, text_channel_id, voice_channel_id = get_room_info(interaction.channel.id)
     if creator_id is None:
-        await interaction.response.send_message(" このコマンドは寝落ち募集部屋でのみ使用できます。", ephemeral=True)
+        await interaction.response.send_message(" このコマンドは通話募集部屋でのみ使用できます。", ephemeral=True)
         return
     if creator_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message(" 部屋の作成者または管理者のみが部屋を削除できます。", ephemeral=True)
@@ -483,10 +484,10 @@ async def admin_logs(interaction: discord.Interaction, limit: int = 10):
         )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="clear-rooms", description="全ての寝落ち募集部屋を削除（管理者専用）")
+@bot.tree.command(name="clear-rooms", description="全ての通話募集部屋を削除（管理者専用）")
 @app_commands.checks.has_permissions(administrator=True)
 async def clear_rooms(interaction: discord.Interaction):
-    """全ての寝落ち募集部屋を削除（管理者専用）"""
+    """全ての通話募集部屋を削除（管理者専用）"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT text_channel_id, voice_channel_id, role_id FROM rooms")
@@ -523,7 +524,7 @@ async def clear_rooms(interaction: discord.Interaction):
 @bot.tree.command(name="bot-help", description="BOTのヘルプを表示")
 async def bot_help(interaction: discord.Interaction):
     """BOTのヘルプを表示"""
-    embed = discord.Embed(title="寝落ち募集BOT ヘルプ", color=discord.Color.blue())
+    embed = discord.Embed(title="通話募集BOT ヘルプ", color=discord.Color.blue())
     embed.add_field(
         name="🔒 ブラックリスト管理",
         value=(
@@ -536,8 +537,8 @@ async def bot_help(interaction: discord.Interaction):
     embed.add_field(
         name="🏠 部屋管理",
         value=(
-            "`/create-room` - 寝落ち募集部屋を作成\n"
-            "`/delete-room` - 寝落ち募集部屋を削除（部屋作成者のみ）"
+            "`/create-room` - 通話募集部屋を作成\n"
+            "`/delete-room` - 通話募集部屋を削除（部屋作成者のみ）"
         ),
         inline=False
     )
@@ -601,6 +602,11 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
         add_admin_log("自動部屋削除", None, c_id, f"channel={channel.id}")
 
 # トークン付与
-TOKEN = os.getenv('DISCORD_TOKEN')
+# .envファイルの読み込み
+load_dotenv()
+
+TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
 
+# デバッグ出力
+print(f"TOKEN: {TOKEN}")
