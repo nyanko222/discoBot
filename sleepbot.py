@@ -53,7 +53,9 @@ def init_db():
             voice_channel_id INTEGER,
             creator_id INTEGER,
             created_at TIMESTAMP,
-            role_id INTEGER
+            role_id INTEGER,
+            gender TEXT,
+            details TEXT
         )
         ''')
         # 管理者ログ
@@ -133,12 +135,12 @@ class GenderRoomView(discord.ui.View):
         modal = RoomCreationModal(gender="all")
         await interaction.response.send_modal(modal)
 
-def add_room(text_channel_id, voice_channel_id, creator_id, role_id):
+def add_room(text_channel_id, voice_channel_id, creator_id, role_id, gender: str, details: str):
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO rooms (text_channel_id, voice_channel_id, creator_id, created_at, role_id) VALUES (?, ?, ?, ?, ?)",
-            (text_channel_id, voice_channel_id, creator_id, datetime.now(), role_id)
+            "INSERT INTO rooms (text_channel_id, voice_channel_id, creator_id, created_at, role_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (text_channel_id, voice_channel_id, creator_id, datetime.now(), role_id, gender, details)
         )
         room_id = cursor.lastrowid
         conn.commit()
@@ -185,7 +187,7 @@ def get_room_info(channel_id):
     return result
 
 # ① 新規追加: ユーザー入力用の Modal クラス
-class RoomCreationModal(discord.ui.Modal, title="部屋作成メッセージ入力"):
+class RoomCreationModal(discord.ui.Modal, title="募集メッセージ入力"):
     def __init__(self, gender: str):
         super().__init__()
         self.gender = gender
@@ -207,6 +209,88 @@ class RoomCreationModal(discord.ui.Modal, title="部屋作成メッセージ入�
             room_message=self.room_message.value
         )
 
+class ShowRoomsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="募集一覧を表示", style=discord.ButtonStyle.blurple)
+    async def show_rooms_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await handle_show_rooms(interaction)
+
+def get_user_genders(member: discord.Member) -> set[str]:
+    """
+    ユーザーが閲覧できる gender のセットを返す。
+    例: 男性ロールがあれば {"male", "all"}、女性ロールがあれば {"female", "all"}、両方あれば {"male","female","all"}。
+    何もなければ空集合。
+    """
+    roleset = set()
+    male_role = discord.utils.get(member.roles, name="男性")
+    female_role = discord.utils.get(member.roles, name="女性")
+
+    if male_role:
+        roleset.add("male")
+    if female_role:
+        roleset.add("female")
+
+    # "all" は、いずれかのロールがある人は閲覧可能とする場合
+    if roleset:
+        roleset.add("all")
+
+    return roleset
+
+
+async def handle_show_rooms(interaction: discord.Interaction):
+    """押した人が閲覧可能な募集一覧をDM or ephemeralで表示する"""
+    member = interaction.user
+    viewable_genders = get_user_genders(member)
+    if not viewable_genders:
+        # 男性ロールも女性ロールも無い場合は何も表示しない
+        await interaction.response.send_message("あなたは閲覧可能な募集がありません。性別ロールをつけてください", ephemeral=True)
+        return
+
+    # DBから部屋一覧を取得
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        # gender が viewable_genders に含まれるものを抽出
+        placeholders = ",".join("?" * len(viewable_genders))  # "?,?" のように動的生成
+        query = f"""
+            SELECT creator_id, text_channel_id, details
+            FROM rooms
+            WHERE gender IN ({placeholders})
+        """
+        cursor.execute(query, tuple(viewable_genders))
+        rows = cursor.fetchall()
+
+    if not rows:
+        await interaction.response.send_message("現在、募集はありません。", ephemeral=True)
+        return
+
+    # Embedにまとめる
+    embed = discord.Embed(
+        title="募集一覧",
+        description="募集部屋の一覧です",
+        color=discord.Color.green()
+    )
+
+    for (creator_id, text_channel_id, details) in rows:
+        # 募集者の名前
+        creator = interaction.guild.get_member(creator_id)
+        creator_name = creator.display_name if creator else f"UserID: {creator_id}"
+
+        # 通話交渉チャンネルへのリンク
+        channel = interaction.guild.get_channel(text_channel_id)
+        channel_mention = channel.mention if channel else f"#{text_channel_id} (削除済み)"
+
+        # 埋め込みに追加
+        # details が長い場合は適宜省略するなど調整
+        embed.add_field(
+            name=f"募集者: {creator_name}",
+            value=f"詳細: {details}\n通話交渉はこちら→: {channel_mention}",
+            inline=False
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 @bot.event
 async def on_ready():
@@ -217,18 +301,6 @@ async def on_ready():
         logger.info("Slashコマンドの同期に成功しました。")
     except Exception as e:
         logger.error(f"Slashコマンドの同期に失敗: {e}")
-
-@bot.tree.command(name="setup-lobby", description="部屋作成ボタン付きメッセージを送信,管理者専用")
-@app_commands.checks.has_permissions(administrator=True)
-async def setup_lobby(interaction: discord.Interaction):
-    """管理者向け: ボタン付きメッセージをチャンネルに設置"""
-    view = GenderRoomView(timeout=None)
-    text = (
-        "**【募集開始ボタン】**\n"
-        "男性のみ・女性のみ・どちらでもOK、いずれかのボタンを押すと募集が開始されます。\n募集を見せたい性別を選んでください！"
-    )
-    await interaction.channel.send(text, view=view)
-    await interaction.response.send_message("部屋作成ボタン付きメッセージを設置しました！", ephemeral=True)
 
 @bot.tree.command(name="bl-add", description="ユーザーをブラックリストに追加")
 @app_commands.describe(
@@ -374,7 +446,7 @@ async def create_room_with_gender(
             category=category,
             overwrites=overwrites
         )
-        add_room(text_channel.id, voice_channel.id, interaction.user.id, hidden_role.id)
+        add_room(text_channel.id, voice_channel.id, interaction.user.id, hidden_role.id, gender, room_message)
         add_admin_log("部屋作成", interaction.user.id, None, f"テキスト:{text_channel.id} ボイス:{voice_channel.id}")
         await interaction.response.send_message(
             f"✅ 通話募集部屋を作成しました！\nテキスト: {text_channel.mention}\nボイス: {voice_channel.mention}", ephemeral=True
@@ -475,6 +547,27 @@ async def on_guild_channel_delete(channel):
                     except Exception as e:
                         logger.error(f"関連チャンネル {other_channel_id} の削除に失敗しました: {str(e)}")
             add_admin_log("自動部屋削除", None, creator_id, f"チャンネル:{channel.id}")
+
+@bot.tree.command(name="setup-lobby", description="部屋作成ボタン付きメッセージを送信（管理者専用）")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_lobby(interaction: discord.Interaction):
+    """管理者向け: ボタン付きメッセージをチャンネルに設置"""
+    view = GenderRoomView(timeout=None)
+    text = (
+        "**【募集開始ボタン】**\n"
+        "男性のみ・女性のみ・どちらでもOK、いずれかのボタンを押すと募集が開始されます。\n募集を見せたい性別を選んでください！"
+    )
+    await interaction.channel.send(text, view=view)
+    await interaction.response.send_message("部屋作成ボタン付きメッセージを設置しました！", ephemeral=True)
+
+@bot.tree.command(name="setup-room-list-button", description="募集一覧を表示するボタンを設置（管理者用）")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_room_list_button(interaction: discord.Interaction):
+    """管理者向け: 募集一覧を表示するボタンを設置する"""
+    view = ShowRoomsView()
+    await interaction.channel.send("募集一覧を表示したい場合は、こちらのボタンを押してください。", view=view)
+    await interaction.response.send_message("募集一覧ボタンを設置しました！", ephemeral=True)
+
 
 @bot.tree.command(name="admin-logs", description="管理者ログを表示（管理者専用）")
 @app_commands.checks.has_permissions(administrator=True)
