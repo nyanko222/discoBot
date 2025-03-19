@@ -139,7 +139,7 @@ def add_room(text_channel_id, voice_channel_id, creator_id, role_id, gender: str
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO rooms (text_channel_id, voice_channel_id, creator_id, created_at, role_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO rooms (text_channel_id, voice_channel_id, creator_id, created_at, role_id, gender, details) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (text_channel_id, voice_channel_id, creator_id, datetime.now(), role_id, gender, details)
         )
         room_id = cursor.lastrowid
