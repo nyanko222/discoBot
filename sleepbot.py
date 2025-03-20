@@ -269,47 +269,74 @@ class RoomCreationModal(discord.ui.Modal, title="募集メッセージ入力"):
             room_message=self.room_message.value
         )
 #部屋作成関数
-async def create_room_with_gender(
-        interaction: discord.Interaction, 
-        gender: str, 
-        capacity: int = 2, 
-        room_message: str = "" 
-        ):
+# 部屋作成コマンド``
+async def create_room_with_gender(interaction: discord.Interaction, gender: str, capacity: int = 2,room_message: str = ""):
     """
     ボタンが押された際に実行される部屋作成ロジック。
     gender: 'male', 'female', 'all'
-    room_message: ユーザーが入力した任意のメッセージ（最大200文字）
     """
-    # 既に部屋があるかチェック
+    # 1. 既に部屋があるかチェック
     existing_rooms = get_rooms_by_creator(interaction.user.id)
     if existing_rooms:
         await interaction.response.send_message(
-            " すでに部屋を作成しています。新しい部屋を作成する前に、既存の部屋を削除してください。",
+            "❌ すでに部屋を作成しています。新しい部屋を作成する前に、既存の部屋を削除してください。",
             ephemeral=True
         )
         return
-    else:
-        room_name = f"{interaction.user.display_name}の通話募集"
-        category_name = f"{interaction.user.display_name}の通話募集-{interaction.user.id}"
+
+    # 2. 部屋名の設定
+    room_name = f"{interaction.user.display_name}の寝落ち募集"
+
+    # 3. カテゴリの取得 or 作成
+    category_name = f"{interaction.user.display_name}の寝落ち募集-{interaction.user.id}"
+    category = discord.utils.get(interaction.guild.categories, name=category_name)
+    if not category:
         category = await interaction.guild.create_category(category_name)
         logger.info(f"カテゴリー '{category_name}' を作成しました")
-        # 初期の権限設定
-        overwrites = {
-            interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False, connect=False),
-            interaction.guild.me: discord.PermissionOverwrite(read_messages=False, send_messages=False, connect=False)
-        }
-               
+
+# 4. チャンネル権限設定 (男性向け/女性向け/両方)
     male_role = discord.utils.get(interaction.guild.roles, name="男性")
     female_role = discord.utils.get(interaction.guild.roles, name="女性")
 
+    # デフォルト: 全員が見えない
+    overwrites = {
+        interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False, connect=False),
+        interaction.guild.me: discord.PermissionOverwrite(read_messages=False, send_messages=False, connect=False)
+    }
+    if gender == "male":
+        # 男性だけ可視
+        if male_role:
+            overwrites[male_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
+        # 女性は不可視
+        if female_role:
+            overwrites[female_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
+        # @everyone も不可視
+        overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
 
-    # ▼▼▼ ここがポイント：ロール名の生成をハッシュ方式に変更 ▼▼▼
+    elif gender == "female":
+        # 女性だけ可視
+        if female_role:
+            overwrites[female_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
+        if male_role:
+            overwrites[male_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
+        overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
+
+    elif gender == "all":
+        # 男性だけ可視
+        if male_role:
+            overwrites[male_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
+        # 女性も可視
+        if female_role:
+            overwrites[female_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
+        # @everyone も不可視
+        overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
+
+       # ▼▼▼ ここがポイント：ロール名の生成をハッシュ方式に変更 ▼▼▼
     # 衝突を防ぎつつ、誰のロールかわからないように匿名性を担保
     random_salt = secrets.token_hex(8)  # 乱数生成
     raw_string = f"{random_salt}:{interaction.user.id}"
     hashed = hashlib.sha256(raw_string.encode()).hexdigest()[:12]  # 先頭12文字にするなどお好みで
     role_name = f"{hashed}"
-
     try:
         hidden_role = await interaction.guild.create_role(
             name=role_name,
@@ -320,10 +347,9 @@ async def create_room_with_gender(
         logger.info(f"非表示ロール '{role_name}' を作成しました")
     except Exception as e:
         logger.error(f"非表示ロールの作成に失敗: {str(e)}")
-        await interaction.response.send_message(f" ロールの作成に失敗しました: {str(e)}", ephemeral=True)
+        await interaction.response.send_message(f"❌ ロールの作成に失敗しました: {str(e)}", ephemeral=True)
         return
-
-    # ブラックリストユーザにロールを付与する処理
+    
     blacklisted_users = get_blacklist(interaction.user.id)
     for user_id in blacklisted_users:
         member = interaction.guild.get_member(user_id)
@@ -333,56 +359,11 @@ async def create_room_with_gender(
                 logger.info(f"ユーザー {user_id} に非表示ロール '{role_name}' を付与しました")
             except Exception as e:
                 logger.error(f"ロール付与に失敗: {str(e)}")
-
-    # overwrites に hidden_role を追加し、黒リストユーザーには見えないよう設定
-    overwrites[hidden_role] = discord.PermissionOverwrite(
-        read_messages=False, 
-        view_channel=False, 
-        connect=False
-    )
-
-    # カテゴリの Overwrites を作る
-    cat_overwrites = {
-        interaction.guild.default_role: discord.PermissionOverwrite(
-            view_channel=False,
-            read_messages=False,
-            connect=False
-        ),
-        interaction.guild.me: discord.PermissionOverwrite(
-            view_channel=True,
-            read_messages=True,
-            connect=True
-        ),
-        hidden_role: discord.PermissionOverwrite(
-            view_channel=False,
-            read_messages=False,
-            connect=False
-        ),
-
-    }
-
-
-    if gender == "male":
-        if male_role:
-            overwrites[male_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
-            overwrites[hidden_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-        if female_role:
-            overwrites[female_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-            overwrites[hidden_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-    elif gender == "female":
-        if female_role:
-            overwrites[female_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
-            overwrites[hidden_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-        if male_role:
-            overwrites[male_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-            overwrites[hidden_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-    elif gender == "all":
-        if male_role:
-            overwrites[male_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
-            overwrites[hidden_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-        if female_role:
-            overwrites[female_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
-            overwrites[hidden_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
+    
+    overwrites = {
+        hidden_role: discord.PermissionOverwrite(read_messages=False, view_channel=False, connect=False),
+         }
+    
 
     try:
         text_channel = await interaction.guild.create_text_channel(
@@ -390,18 +371,16 @@ async def create_room_with_gender(
             category=category,
             overwrites=overwrites
         )
+        
         voice_channel = await interaction.guild.create_voice_channel(
             name=f"{room_name}-お部屋",
             category=category,
             overwrites=overwrites
         )
-
-        # カテゴリに対して Overwrite を適用
-        await category.edit(overwrites=cat_overwrites)
-        logger.info(f"カテゴリー '{category_name}' に Overwrites を設定しました")
-
+        
         add_room(text_channel.id, voice_channel.id, interaction.user.id, hidden_role.id, gender, room_message)
         add_admin_log("部屋作成", interaction.user.id, None, f"テキスト:{text_channel.id} ボイス:{voice_channel.id}")
+        
         await interaction.response.send_message(
             f"✅ 通話募集部屋を作成しました！\nテキスト: {text_channel.mention}\nボイス: {voice_channel.mention}",
             ephemeral=True
