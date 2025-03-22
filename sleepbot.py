@@ -386,27 +386,48 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
             ephemeral=True
         )
 
-        await text_channel.send(
-            f"{interaction.user.mention} さんが通話を募集中です！\n部屋の作成者は`/delete-room` コマンドでこの部屋を削除できます。"
-        )
+        # ▼▼▼ 作成者の性別を判定 ▼▼▼
+        male_role = discord.utils.get(interaction.guild.roles, name="男性")
+        female_role = discord.utils.get(interaction.guild.roles, name="女性")
+
+        if male_role in interaction.user.roles and female_role in interaction.user.roles:
+            creator_gender_jp = "両方！？"
+        elif male_role in interaction.user.roles:
+            creator_gender_jp = "男性"
+        elif female_role in interaction.user.roles:
+            creator_gender_jp = "女性"
+        else:
+            creator_gender_jp = "不明"
+
+        # ▼▼▼ ロールメンション組み立て ▼▼▼
         male_notice_role = discord.utils.get(interaction.guild.roles, name="男性募集通知")
         female_notice_role = discord.utils.get(interaction.guild.roles, name="女性募集通知")
 
+        role_mentions = []
         if gender == "male":
             if male_notice_role:
-                await text_channel.send(f"{male_notice_role.mention} ")
+                role_mentions.append(male_notice_role.mention)
         elif gender == "female":
             if female_notice_role:
-                await text_channel.send(f"{female_notice_role.mention} ")
+                role_mentions.append(female_notice_role.mention)
         elif gender == "all":
-            # 両方メンション
             if male_notice_role:
-                await text_channel.send(f"{male_notice_role.mention} ")
+                role_mentions.append(male_notice_role.mention)
             if female_notice_role:
-                await text_channel.send(f"{female_notice_role.mention} ")
-       
+                role_mentions.append(female_notice_role.mention)
+
+        role_mention_str = " ".join(role_mentions)
+
+        # ▼▼▼ 1回のメッセージでまとめて送信 ▼▼▼
+        message_text = (
+            f"{interaction.user.mention} さん（{creator_gender_jp}）が通話を募集中です！\n\n"
+        )
         if room_message:
-            await text_channel.send(f"📝 募集の詳細\n {room_message}")
+            message_text += f"📝 募集の詳細\n{room_message}\n\n"
+        
+        message_text += f"{role_mention_str}\n部屋の作成者は `/delete-room` コマンドでこの部屋を削除できます。\n"
+
+        await text_channel.send(message_text)
 
     except Exception as e:
         logger.error(f"部屋の作成に失敗: {str(e)}")
