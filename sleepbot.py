@@ -385,9 +385,26 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
             f"✅ 通話募集部屋を作成しました！\nテキスト: {text_channel.mention}\nボイス: {voice_channel.mention}",
             ephemeral=True
         )
+
         await text_channel.send(
             f"{interaction.user.mention} さんが通話を募集中です！\n部屋の作成者は`/delete-room` コマンドでこの部屋を削除できます。"
         )
+        male_notice_role = discord.utils.get(interaction.guild.roles, name="男性募集通知")
+        female_notice_role = discord.utils.get(interaction.guild.roles, name="女性募集通知")
+
+        if gender == "male":
+            if male_notice_role:
+                await text_channel.send(f"{male_notice_role.mention} ")
+        elif gender == "female":
+            if female_notice_role:
+                await text_channel.send(f"{female_notice_role.mention} ")
+        elif gender == "all":
+            # 両方メンション
+            if male_notice_role:
+                await text_channel.send(f"{male_notice_role.mention} ")
+            if female_notice_role:
+                await text_channel.send(f"{female_notice_role.mention} ")
+       
         if room_message:
             await text_channel.send(f"📝 募集の詳細\n {room_message}")
 
@@ -702,7 +719,7 @@ async def handle_show_rooms(interaction: discord.Interaction):
         if creator:
             # 両方持っているケースもあるかもしれないので一応分岐
             if male_role in creator.roles and female_role in creator.roles:
-                creator_gender_jp = "両方！？"  # または「両方？」など
+                creator_gender_jp = "両方！？" 
             elif male_role in creator.roles:
                 creator_gender_jp = "男性"
             elif female_role in creator.roles:
