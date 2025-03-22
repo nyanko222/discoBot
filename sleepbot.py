@@ -391,7 +391,7 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         female_role = discord.utils.get(interaction.guild.roles, name="女性")
 
         if male_role in interaction.user.roles and female_role in interaction.user.roles:
-            creator_gender_jp = "両方！？"
+            creator_gender_jp = "両方!?"
         elif male_role in interaction.user.roles:
             creator_gender_jp = "男性"
         elif female_role in interaction.user.roles:
@@ -934,6 +934,44 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
                     logger.warning(f"カテゴリ {cat.name} の削除に失敗: {e}")
 
         add_admin_log("自動部屋削除", None, c_id, f"channel={channel.id}")
+
+#自動ログ記録機能
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    """
+    すべてのインタラクション（スラッシュコマンド・ボタン・モーダルなど）を捕捉する。
+    """
+    # 1. スラッシュコマンドの場合
+    if interaction.type == discord.InteractionType.application_command:
+        # コマンド名を取得
+        command_name = interaction.command.name if interaction.command else "unknown"
+        user_id = interaction.user.id
+        user_name = interaction.user.display_name
+
+        # ログへ出力
+        logger.info(f"[CommandExecuted] {user_name}({user_id}) ran /{command_name}")
+        # DBへの管理者ログ記録もしたい場合
+        add_admin_log("Slashコマンド実行", user_id, details=f"/{command_name}")
+
+    # 2. ボタン（コンポーネント）操作の場合
+    elif interaction.type == discord.InteractionType.component:
+        # component_type=2 が「ボタン」、=3 が「セレクトメニュー」など
+        # custom_id にボタンごとのIDが入る
+        if interaction.data.get("component_type") == 2:  # 2 = Button
+            custom_id = interaction.data.get("custom_id", "unknown")
+            user_id = interaction.user.id
+            user_name = interaction.user.display_name
+
+            logger.info(f"[ButtonClicked] {user_name}({user_id}) pressed button custom_id={custom_id}")
+            add_admin_log("ボタンクリック", user_id, details=f"button_id={custom_id}")
+
+    # 3. それ以外（モーダル送信など）も必要ならここで判定する
+    # elif interaction.type == discord.InteractionType.modal_submit:
+    #     ...
+
+    # なお、必ず最後に `await bot.process_application_commands(interaction)` する必要はありません。
+    # Py-cord 等の場合、内部で既に行っているためこのままでOKです。
+
 
 # トークン付与
 # .envファイルの読み込み
