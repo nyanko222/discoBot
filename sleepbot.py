@@ -15,6 +15,7 @@ from discord import app_commands
 from discord.ext import tasks
 from datetime import datetime
 from dotenv import load_dotenv
+from contextlib import contextmanager
 
 # ロギング設定
 logging.basicConfig(
@@ -36,11 +37,13 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 DB_PATH = 'blacklist.db'
 
 def get_db_connection():
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
 
 # データベース初期化
 def init_db():
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         # ユーザーごとのブラックリスト
         cursor.execute('''
@@ -91,42 +94,56 @@ async def on_ready():
 
 
     # DB関連ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
+    #ロルバ対応DB処理
+@contextmanager
+def safe_db_context():
+    conn = get_db_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"[DB Error] 処理中にエラー発生: {e}")
+        raise
+    finally:
+        conn.close()
+
     # 管理者ログ機能
 def add_admin_log(action, user_id, target_id=None, details=""):
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO admin_logs (action, user_id, target_id, details, timestamp) VALUES (?, ?, ?, ?, ?)",
             (action, user_id, target_id, details, datetime.now())
         )
-        conn.commit()
+        
     logger.info(f"管理者ログ: {action} - ユーザー: {user_id} - 対象: {target_id} - 詳細: {details}")
 
 
 # ブラックリスト機能
 def add_to_blacklist(owner_id, blocked_user_id, reason=""):
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT OR REPLACE INTO user_blacklists (owner_id, blocked_user_id, reason, added_at) VALUES (?, ?, ?, ?)",
             (owner_id, blocked_user_id, reason, datetime.now())
         )
-        conn.commit()
+        
     logger.info(f"ブラックリスト追加: ユーザー {owner_id} が {blocked_user_id} をブロック - 理由: {reason}")
 
 def remove_from_blacklist(owner_id, blocked_user_id):
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM user_blacklists WHERE owner_id = ? AND blocked_user_id = ?", 
                       (owner_id, blocked_user_id))
         result = cursor.rowcount > 0
-        conn.commit()
+        
     if result:
         logger.info(f"ブラックリスト削除: ユーザー {owner_id} が {blocked_user_id} のブロックを解除")
     return result
 
 def get_blacklist(owner_id):
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT blocked_user_id FROM user_blacklists WHERE owner_id = ?", (owner_id,))
         blacklist = [row[0] for row in cursor.fetchall()]
@@ -203,26 +220,26 @@ class GenderRoomView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
 def add_room(text_channel_id, voice_channel_id, creator_id, role_id, gender: str, details: str):
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO rooms (text_channel_id, voice_channel_id, creator_id, created_at, role_id, gender, details) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (text_channel_id, voice_channel_id, creator_id, datetime.now(), role_id, gender, details)
         )
         room_id = cursor.lastrowid
-        conn.commit()
+        
     logger.info(f"部屋作成: ユーザー {creator_id} がテキスト:{text_channel_id} ボイス:{voice_channel_id} を作成")
     return room_id
 
 def get_rooms_by_creator(creator_id):
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT text_channel_id, voice_channel_id FROM rooms WHERE creator_id = ?", (creator_id,))
         rooms = cursor.fetchall()
     return rooms
 
 def remove_room(text_channel_id=None, voice_channel_id=None):
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         if text_channel_id:
             cursor.execute("SELECT role_id, creator_id, voice_channel_id FROM rooms WHERE text_channel_id = ?", (text_channel_id,))
@@ -240,11 +257,11 @@ def remove_room(text_channel_id=None, voice_channel_id=None):
         elif voice_channel_id:
             cursor.execute("DELETE FROM rooms WHERE voice_channel_id = ?", (voice_channel_id,))
             logger.info(f"部屋削除: ボイスチャンネル {voice_channel_id} を削除")
-        conn.commit()
+        
     return role_id, creator_id, other_channel_id
 
 def get_room_info(channel_id):
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT creator_id, role_id, text_channel_id, voice_channel_id FROM rooms WHERE text_channel_id = ? OR voice_channel_id = ?", 
                       (channel_id, channel_id))
@@ -467,7 +484,7 @@ async def on_voice_state_update(member, before, after):
         await check_room_capacity(ch)
 async def check_room_capacity(voice_channel: discord.VoiceChannel):
     # DBで検索
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT text_channel_id, creator_id, role_id, gender, details
@@ -703,7 +720,7 @@ async def handle_show_rooms(interaction: discord.Interaction):
         return
 
     # ① DBから性別(gender)に合致する部屋一覧を取得
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         placeholders = ",".join("?" * len(viewable_genders))
         query = f"""
@@ -799,7 +816,7 @@ async def setup_room_list_button(interaction: discord.Interaction):
 @app_commands.describe(limit="表示する件数")
 async def admin_logs(interaction: discord.Interaction, limit: int = 10):
     """管理者ログを表示（管理者専用）"""
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT action, user_id, target_id, details, timestamp 
@@ -828,7 +845,7 @@ async def admin_logs(interaction: discord.Interaction, limit: int = 10):
 @app_commands.checks.has_permissions(administrator=True)
 async def clear_rooms(interaction: discord.Interaction):
     """全ての通話募集部屋を削除（管理者専用）"""
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT text_channel_id, voice_channel_id, role_id FROM rooms")
         rooms = cursor.fetchall()
@@ -854,10 +871,10 @@ async def clear_rooms(interaction: discord.Interaction):
             count += 1
         except Exception as e:
             logger.error(f"部屋の削除に失敗: {str(e)}")
-    with get_db_connection() as conn:
+    with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM rooms")
-        conn.commit()
+        
     add_admin_log("全部屋削除", interaction.user.id, None, f"{count}個の部屋を削除")
     await interaction.response.send_message(f"✅ {count}個の部屋を削除しました。", ephemeral=True)
 
