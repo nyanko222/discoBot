@@ -386,7 +386,7 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
             ephemeral=True
         )
         await text_channel.send(
-            f"🎉 {interaction.user.mention} の通話募集部屋へようこそ！\n部屋の作成者は`/delete-room` コマンドでこの部屋を削除できます。"
+            f"{interaction.user.mention} さんが通話を募集中です！\n部屋の作成者は`/delete-room` コマンドでこの部屋を削除できます。"
         )
         if room_message:
             await text_channel.send(f"📝 募集の詳細\n {room_message}")
@@ -650,21 +650,19 @@ def get_user_genders(member: discord.Member) -> set[str]:
 
 
 async def handle_show_rooms(interaction: discord.Interaction):
-    """押した人が閲覧可能な募集一覧をDM or ephemeralで表示する"""
+    """押した人が閲覧できる募集一覧を表示する (ロール＋ブラックリスト制御)"""
     member = interaction.user
     viewable_genders = get_user_genders(member)
     if not viewable_genders:
-        # 男性ロールも女性ロールも無い場合は何も表示しない
-        await interaction.response.send_message("あなたは閲覧可能な募集がありません。性別ロールをつけてください", ephemeral=True)
+        await interaction.response.send_message("現在、募集はありません。", ephemeral=True)
         return
 
-    # DBから部屋一覧を取得
+    # ① DBから性別(gender)に合致する部屋一覧を取得
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        # gender が viewable_genders に含まれるものを抽出
-        placeholders = ",".join("?" * len(viewable_genders))  # "?,?" のように動的生成
+        placeholders = ",".join("?" * len(viewable_genders))
         query = f"""
-            SELECT creator_id, text_channel_id, details
+            SELECT creator_id, text_channel_id, details, gender
             FROM rooms
             WHERE gender IN ({placeholders})
         """
@@ -675,31 +673,59 @@ async def handle_show_rooms(interaction: discord.Interaction):
         await interaction.response.send_message("現在、募集はありません。", ephemeral=True)
         return
 
-    # Embedにまとめる
     embed = discord.Embed(
         title="募集一覧",
-        description="募集部屋の一覧です",
+        description="募集部屋の一覧を表示します。",
         color=discord.Color.green()
     )
 
-    for (creator_id, text_channel_id, details) in rows:
-        # 募集者の名前
+    count = 0
+    for (creator_id, text_channel_id, details, gender) in rows:
+        # ② 作成者のブラックリストを取得
+        creator_blacklist = get_blacklist(creator_id)
+        # ③ ボタンを押したユーザーがブラックリストに含まれているか？
+        if member.id in creator_blacklist:
+            # 含まれていれば「この部屋は非表示」にする
+            continue
+
+        # ④ 通常の表示処理
         creator = interaction.guild.get_member(creator_id)
         creator_name = creator.display_name if creator else f"UserID: {creator_id}"
-
-        # 通話交渉チャンネルへのリンク
         channel = interaction.guild.get_channel(text_channel_id)
         channel_mention = channel.mention if channel else f"#{text_channel_id} (削除済み)"
 
-        # 埋め込みに追加
-        # details が長い場合は適宜省略するなど調整
+        male_role = discord.utils.get(interaction.guild.roles, name="男性")
+        female_role = discord.utils.get(interaction.guild.roles, name="女性")
+
+        # 省略
+            # ③ 作成者のロールを見て性別を判定
+        if creator:
+            # 両方持っているケースもあるかもしれないので一応分岐
+            if male_role in creator.roles and female_role in creator.roles:
+                creator_gender_jp = "両方！？"  # または「両方？」など
+            elif male_role in creator.roles:
+                creator_gender_jp = "男性"
+            elif female_role in creator.roles:
+                creator_gender_jp = "女性"
+            else:
+                creator_gender_jp = "不明"
+        else:
+            creator_gender_jp = "不明"
+
+
         embed.add_field(
-            name=f"募集者: {creator_name}",
-            value=f"【詳細】 \n{details}\n通話交渉はこちら→: {channel_mention}",
+            name=f"募集者: {creator_name} / 性別: {creator_gender_jp}",
+            value=f"詳細: {details}\n交渉チャンネル: {channel_mention}",
             inline=False
         )
+        count += 1
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    if count == 0:
+        # ブラックリストチェックで全部スキップされた場合など
+        await interaction.response.send_message("現在、募集はありません。", ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 #管理者用コマンドーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
 @bot.tree.command(name="setup-lobby", description="部屋作成ボタン付きメッセージを送信（管理者専用）")
