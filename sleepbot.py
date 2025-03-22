@@ -1,13 +1,20 @@
 import discord
-from discord.ext import commands
-from discord import app_commands
-from dotenv import load_dotenv
+
 import sqlite3
 import os
-from datetime import datetime
+
 import logging
 import secrets
 import hashlib
+import shutil
+import glob
+import datetime
+
+from discord.ext import commands
+from discord import app_commands
+from discord.ext import tasks
+from datetime import datetime
+from dotenv import load_dotenv
 
 # ロギング設定
 logging.basicConfig(
@@ -935,7 +942,7 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
 
         add_admin_log("自動部屋削除", None, c_id, f"channel={channel.id}")
 
-#自動ログ記録機能
+#実行者名ログ機能
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
     """
@@ -971,6 +978,93 @@ async def on_interaction(interaction: discord.Interaction):
 
     # なお、必ず最後に `await bot.process_application_commands(interaction)` する必要はありません。
     # Py-cord 等の場合、内部で既に行っているためこのままでOKです。
+
+
+# ▼▼ バックアップ先フォルダ名・バックアップを送るチャンネルIDなどを設定 ▼▼
+BACKUP_FOLDER = "backups"
+CHANNEL_ID_FOR_BACKUP = 123456789012345678  # ここをバックアップを送信したいチャンネルのIDに置き換え
+
+@tasks.loop(time=datetime.time(hour=12, minute=0, second=0))
+async def daily_backup_task():
+    """
+    毎日12:00に実行されるタスク。
+    1) ログファイル・DBファイルをバックアップ
+    2) 7日以上前のバックアップを削除
+    3) 指定チャンネルへバックアップファイルを送信
+    """
+    # 1) バックアップファイルの作成
+    os.makedirs(BACKUP_FOLDER, exist_ok=True)
+
+    # タイムスタンプ（例: 2023-09-28_12-00-00）
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    # バックアップ対象
+    log_file = "bot.log"
+    db_file  = "blacklist.db"
+
+    # 保存先ファイル名
+    backup_log_name = f"botlog_{timestamp}.log"
+    backup_db_name  = f"blacklist_{timestamp}.db"
+
+    try:
+        if os.path.exists(log_file):
+            shutil.copy2(log_file, os.path.join(BACKUP_FOLDER, backup_log_name))
+        if os.path.exists(db_file):
+            shutil.copy2(db_file, os.path.join(BACKUP_FOLDER, backup_db_name))
+    except Exception as e:
+        # バックアップ失敗時のログ
+        print(f"[BackupError] バックアップ中にエラー: {e}")
+        return
+
+    # 2) 7日以上前のバックアップを削除
+    #   ファイル名に含まれる日付から判断するか、ファイル作成日時から判断するかの2パターンあります。
+    #   ここでは「ファイルの作成日時(mtime)」を見て7日より古いものを消します。
+    now = datetime.datetime.now()
+    seven_days_ago = now - datetime.timedelta(days=7)
+
+    for file_path in glob.glob(os.path.join(BACKUP_FOLDER, "*")):
+        try:
+            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
+            if mtime < seven_days_ago:
+                os.remove(file_path)
+        except Exception as e:
+            print(f"[CleanupError] 古いバックアップ削除時にエラー: {e}")
+
+    # 3) ディスコードの特定チャンネルへバックアップファイルを送信
+    CHANNEL_ID_FOR_BACKUP = 1352915915263443014
+    channel = bot.get_channel(CHANNEL_ID_FOR_BACKUP)
+    if channel is None:
+        print(f"[BackupWarn] 指定チャンネル (ID={CHANNEL_ID_FOR_BACKUP}) が見つかりません。送信をスキップします。")
+        return
+
+    # バックアップしたファイルを添付して送信
+    # 複数ファイルをまとめて送りたい場合は、Fileオブジェクトをリスト化して send(files=...) が使えます。
+    files_to_send = []
+    backup_log_path = os.path.join(BACKUP_FOLDER, backup_log_name)
+    backup_db_path  = os.path.join(BACKUP_FOLDER, backup_db_name)
+
+    if os.path.exists(backup_log_path):
+        files_to_send.append(discord.File(backup_log_path))
+    if os.path.exists(backup_db_path):
+        files_to_send.append(discord.File(backup_db_path))
+
+    if files_to_send:
+        await channel.send(
+            content=f"バックアップ完了: {timestamp}\n古いバックアップ(7日以上)は自動削除しています。",
+            files=files_to_send
+        )
+
+@daily_backup_task.before_loop
+async def before_daily_backup_task():
+    """Botが起動し、準備ができるまで待機する"""
+    await bot.wait_until_ready()
+
+# on_ready のタイミングや、ファイル末尾などで起動時にタスクをスタート
+@bot.event
+async def on_ready():
+    print(f'BOTにログインしました: {bot.user.name}')
+    daily_backup_task.start()
+    # すでにon_readyがあれば追記してください。
 
 
 # トークン付与
