@@ -809,6 +809,32 @@ async def setup_room_list_button(interaction: discord.Interaction):
     view = ShowRoomsView()
     await interaction.channel.send("募集一覧を表示したい場合は、こちらのボタンを押してください。", view=view)
     await interaction.response.send_message("募集一覧ボタンを設置しました！", ephemeral=True)
+@bot.tree.command(name="setup-blacklist-help", description="ブラックリスト関連のコマンド一覧を全体向けのメッセージとして設置（管理者専用）")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_blacklist_help(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="ブラックリスト機能 コマンド一覧",
+        description="以下のコマンドを使用すれば、ブラックリストを操作できます。",
+        color=discord.Color.red()
+    )
+    embed.add_field(
+        name="/bl-add",
+        value="指定したユーザーをブラックリストに追加します。\n例: `/bl-add @ユーザー [理由]`",
+        inline=False
+    )
+    embed.add_field(
+        name="/bl-remove",
+        value="指定したユーザーをブラックリストから削除します。\n例: `/bl-remove @ユーザー`",
+        inline=False
+    )
+    embed.add_field(
+        name="/bl-list",
+        value="あなたのブラックリストに登録されているユーザー一覧をDMに送ります。\n例: `/bl-list`",
+        inline=False
+    )
+    # 全体向けにメッセージを送信
+    await interaction.channel.send(embed=embed)
+    await interaction.response.send_message("ブラックリストコマンド一覧を設置しました。", ephemeral=True)
 
 
 @bot.tree.command(name="admin-logs", description="管理者ログを表示（管理者専用）")
