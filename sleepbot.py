@@ -13,7 +13,6 @@ import datetime
 from discord.ext import commands
 from discord import app_commands
 from discord.ext import tasks
-from datetime import datetime
 from dotenv import load_dotenv
 from contextlib import contextmanager
 
@@ -114,7 +113,7 @@ def add_admin_log(action, user_id, target_id=None, details=""):
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO admin_logs (action, user_id, target_id, details, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (action, user_id, target_id, details, datetime.now())
+            (action, user_id, target_id, details, datetime.datetime.now())
         )
         
     logger.info(f"管理者ログ: {action} - ユーザー: {user_id} - 対象: {target_id} - 詳細: {details}")
@@ -126,7 +125,7 @@ def add_to_blacklist(owner_id, blocked_user_id, reason=""):
         cursor = conn.cursor()
         cursor.execute(
             "INSERT OR REPLACE INTO user_blacklists (owner_id, blocked_user_id, reason, added_at) VALUES (?, ?, ?, ?)",
-            (owner_id, blocked_user_id, reason, datetime.now())
+            (owner_id, blocked_user_id, reason, datetime.datetime.now())
         )
         
     logger.info(f"ブラックリスト追加: ユーザー {owner_id} が {blocked_user_id} をブロック - 理由: {reason}")
@@ -224,7 +223,7 @@ def add_room(text_channel_id, voice_channel_id, creator_id, role_id, gender: str
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO rooms (text_channel_id, voice_channel_id, creator_id, created_at, role_id, gender, details) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (text_channel_id, voice_channel_id, creator_id, datetime.now(), role_id, gender, details)
+            (text_channel_id, voice_channel_id, creator_id, datetime.datetime.now(), role_id, gender, details)
         )
         room_id = cursor.lastrowid
         
@@ -762,7 +761,7 @@ async def handle_show_rooms(interaction: discord.Interaction):
 
 
         embed.add_field(
-            name=f"募集者: {creator_name} / 性別: {creator_gender_jp}",
+            name=f"募集者: {creator_name} / {creator_gender_jp}",
             value=f"詳細: {details}\n交渉チャンネル: {channel_mention}",
             inline=False
         )
@@ -796,7 +795,6 @@ async def setup_room_list_button(interaction: discord.Interaction):
     await interaction.channel.send("募集一覧を表示したい場合は、こちらのボタンを押してください。", view=view)
     await interaction.response.send_message("募集一覧ボタンを設置しました！", ephemeral=True)
 @bot.tree.command(name="setup-blacklist-help", description="ブラックリスト関連のコマンド一覧を全体向けのメッセージとして設置（管理者専用）")
-
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_blacklist_help(interaction: discord.Interaction):
     embed = discord.Embed(
