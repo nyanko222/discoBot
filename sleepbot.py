@@ -448,27 +448,33 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
             logger.error(f"エラー後のロール削除に失敗: {str(e_del)}")
 
 #満室時に見えなくなる機能
-#満室チェック
+#出入りイベント
 @bot.event
 async def on_voice_state_update(member, before, after):
     """
     ボイスチャンネルへの入退出が発生するたびに呼び出される。
-    before.channel: 退出元のVC
-    after.channel:  入室先のVC
+    before.channel: 退出元のVC (Noneの可能性あり)
+    after.channel : 入室先のVC (Noneの可能性あり)
     """
-    # 1. 退出先( before.channel ) と 入室先( after.channel ) の両方をチェック
-    #    どちらも rooms テーブルにある可能性があるため
-
+    # 1. 退出先と入室先、両方をチェック
     channels_to_check = []
     if before.channel is not None:
         channels_to_check.append(before.channel)
     if after.channel is not None:
         channels_to_check.append(after.channel)
 
+    # 2. 各チャンネルで部屋の人数を再計算
     for ch in channels_to_check:
         await check_room_capacity(ch)
+
+#満室チェック
 async def check_room_capacity(voice_channel: discord.VoiceChannel):
-    # DBで検索
+    """
+    部屋にいるメンバー（人間/ボット）を分けてカウントし、
+    - 人間が2人以上なら部屋を隠す
+    - 人数上限(user_limit)を「全メンバー数+1」にする
+    """
+    # DBで検索して、このチャンネルが "rooms" テーブルにあるかチェック
     with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -479,32 +485,39 @@ async def check_room_capacity(voice_channel: discord.VoiceChannel):
         row = cursor.fetchone()
 
     if not row:
-        return  # このボイスチャンネルは「部屋」ではないので無視
+        return  # このチャンネルは「部屋」ではないので何もしない
 
     text_channel_id, creator_id, role_id, gender, details = row
-    
 
-    # 現在の人数を取得
-    member_count = len(voice_channel.members)
+    # --- 人間だけカウント ---
+    human_members = [m for m in voice_channel.members if not m.bot]
+    human_count = len(human_members)
 
-    # チャンネルオブジェクト取得
+    # --- Botだけカウント（必要なら） ---
+    bot_members = [m for m in voice_channel.members if m.bot]
+    bot_count = len(bot_members)
+
+    # 例: 人間2人以上なら「満室扱い」で隠す
+    if human_count >= 2:
+        await hide_room(voice_channel, text_channel_id, role_id, creator_id)
+    else:
+        await show_room(voice_channel, text_channel_id, role_id, creator_id, gender)
+
+    # 例: 人数上限を「(人間+Bot) + 1」に設定
+    total_count = human_count + bot_count
+    new_limit = total_count + 1
+    try:
+        await voice_channel.edit(user_limit=new_limit)
+        logger.info(f"ボイスチャンネル {voice_channel.id} の上限を {new_limit} に設定しました (現在 人間:{human_count}, Bot:{bot_count})")
+    except Exception as e:
+        logger.error(f"ボイスチャンネルの上限設定に失敗: {e}")
+
+#部屋を隠す        
+async def hide_room(voice_channel: discord.VoiceChannel, text_channel_id: int, role_id: int, creator_id: int):
+    """部屋を隠す処理。既存のコードに合わせてオーバーライド"""
     text_channel = voice_channel.guild.get_channel(text_channel_id)
     hidden_role = voice_channel.guild.get_role(role_id) if role_id else None
 
-    if member_count >= 2:
-        # 満室 → 全員から見えないようにする
-        await hide_room(voice_channel, text_channel, hidden_role, creator_id)
-    else:
-        # 空きあり → 元の公開条件を復元
-        await show_room(voice_channel, text_channel, hidden_role, creator_id, gender)
-
-#部屋を隠す        
-async def hide_room(
-    voice_channel: discord.VoiceChannel,
-    text_channel: discord.TextChannel,
-    hidden_role: discord.Role,
-    creator_id: int
-):
     guild = voice_channel.guild
     overwrites = {}
 
@@ -522,27 +535,24 @@ async def hide_room(
     if creator:
         overwrites[creator] = discord.PermissionOverwrite(read_messages=True, connect=True)
 
-    # 4. 現在ボイスチャンネルにいる人たちも見えるように
+    # 4. 現在ボイスチャンネルにいる人たち（Bot含む）も見えるように
     for member in voice_channel.members:
-        # すでに creator と同じ人かもしれないので重複は上書き
         overwrites[member] = discord.PermissionOverwrite(read_messages=True, connect=True)
 
     try:
-        await text_channel.edit(overwrites=overwrites)
+        if text_channel:
+            await text_channel.edit(overwrites=overwrites)
         await voice_channel.edit(overwrites=overwrites)
-        logger.info(f"[hide_room] {text_channel.id} / {voice_channel.id} を満室モードにしました")
+        logger.info(f"[hide_room] {text_channel_id} / {voice_channel.id} を満室モードにしました")
     except Exception as e:
         logger.error(f"[hide_room] チャンネルの上書きに失敗: {e}")
 
 
-#部屋を再び見せる
-async def show_room(voice_channel: discord.VoiceChannel, text_channel: discord.TextChannel,
-                    hidden_role: discord.Role, creator_id: int, gender: str):
-    """
-    部屋を再び公開するときの処理。
-    genderに応じて、男性ロール・女性ロールへのPermissionをONにする。
-    hidden_role（ブラックリスト用ロール）は見えないままにする。
-    """
+async def show_room(voice_channel: discord.VoiceChannel, text_channel_id: int, role_id: int, creator_id: int, gender: str):
+    """部屋を再び公開する処理。既存のコードに合わせてオーバーライド"""
+    text_channel = voice_channel.guild.get_channel(text_channel_id)
+    hidden_role = voice_channel.guild.get_role(role_id) if role_id else None
+
     guild = voice_channel.guild
     male_role = discord.utils.get(guild.roles, name="男性")
     female_role = discord.utils.get(guild.roles, name="女性")
@@ -552,12 +562,10 @@ async def show_room(voice_channel: discord.VoiceChannel, text_channel: discord.T
         guild.default_role: discord.PermissionOverwrite(read_messages=False, connect=False),
         guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, connect=True),
     }
-
     if hidden_role:
-        # ブラックリストロールには見せない
         overwrites[hidden_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
 
-    # genderに応じてON
+    # 性別(gender)に応じた可視/不可視
     if gender == "male":
         if male_role:
             overwrites[male_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
@@ -575,12 +583,12 @@ async def show_room(voice_channel: discord.VoiceChannel, text_channel: discord.T
             overwrites[female_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
 
     try:
-        await text_channel.edit(overwrites=overwrites)
+        if text_channel:
+            await text_channel.edit(overwrites=overwrites)
         await voice_channel.edit(overwrites=overwrites)
         logger.info(f"[show_room] {text_channel.id} / {voice_channel.id} を再公開しました (gender={gender})")
     except Exception as e:
         logger.error(f"[show_room] チャンネルの上書きに失敗: {e}")
-
 
 #部屋削除スラッシュコマンド
 @bot.tree.command(name="delete-room", description="通話募集部屋を削除")
@@ -762,7 +770,7 @@ async def handle_show_rooms(interaction: discord.Interaction):
 
         embed.add_field(
             name=f"募集者: {creator_name} / {creator_gender_jp}",
-            value=f"詳細: {details}\n交渉チャンネル: {channel_mention}",
+            value=f"詳細: \n{details}\n交渉チャンネル: {channel_mention}",
             inline=False
         )
         count += 1
