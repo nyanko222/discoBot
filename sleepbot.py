@@ -423,24 +423,10 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         else:
             creator_gender_jp = "不明"
 
-        # ▼▼▼ ロールメンション組み立て ▼▼▼
-        male_notice_role = discord.utils.get(interaction.guild.roles, name="男性募集通知")
-        female_notice_role = discord.utils.get(interaction.guild.roles, name="女性募集通知")
+        # ▼▼▼ ロールメンション ▼▼▼
+        notice_role = discord.utils.get(interaction.guild.roles, name="募集通知")
 
-        role_mentions = []
-        if gender == "male":
-            if male_notice_role:
-                role_mentions.append(male_notice_role.mention)
-        elif gender == "female":
-            if female_notice_role:
-                role_mentions.append(female_notice_role.mention)
-        elif gender == "all":
-            if male_notice_role:
-                role_mentions.append(male_notice_role.mention)
-            if female_notice_role:
-                role_mentions.append(female_notice_role.mention)
-
-        role_mention_str = " ".join(role_mentions)
+        role_mention_str = notice_role.mention
 
         # ▼▼▼ 1回のメッセージでまとめて送信 ▼▼▼
         message_text = (
@@ -818,7 +804,7 @@ async def setup_blacklist_help(interaction: discord.Interaction):
         description=(
             "🚫ブラックリストは部屋を作るときに参照されます！\n"
             "🚫部屋の作成前に、ブラックリストの追加・確認をお忘れなく！\n\n"
-            "以下のコマンドを使用して、ブラックリストの管理が可能です。"
+            "以下のコマンドを使用すると、ブラックリストの管理ができます。"
         ),
         color=discord.Color.red()
     )
