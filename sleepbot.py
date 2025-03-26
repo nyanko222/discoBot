@@ -222,7 +222,8 @@ class PersonalBlacklistManageView(discord.ui.View):
     )
     async def user_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         self.selected_users = select.values
-        await send_interaction_message(interaction,"ユーザーを選択しました。",ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         
     @discord.ui.button(label="確認", style=discord.ButtonStyle.primary)
     async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -294,7 +295,7 @@ async def setup_bl_list_button(interaction: discord.Interaction):
     """
     view = ShowBlacklistButtonView()
     await interaction.channel.send(
-        "自分のブラックリストを確認したい場合は、以下のボタンを押してください。",
+        "## 📕ブラックリスト一覧ボタン",
         view=view
     )
     await send_interaction_message(interaction,"ブラックリスト一覧ボタンを設置しました。", ephemeral=True)
