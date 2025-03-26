@@ -189,7 +189,7 @@ async def bl_manage_setup(interaction: discord.Interaction, action: str):
         return
 
     view = GlobalBlacklistButtonView(action)
-    msg = "## 💔ブラックリスト追加ボタン" if action == "add" else "## 💚ブラックリスト解除ボタン"
+    msg = "## 💔ブラックリスト追加ボタン" if action == "add" else "## 💙ブラックリスト解除ボタン"
     await send_interaction_message(interaction, msg, view=view, ephemeral=False)
 
 #ボタン
@@ -198,7 +198,7 @@ class GlobalBlacklistButtonView(discord.ui.View):
         super().__init__(timeout=None)  # 永続化したい場合はtimeout=Noneに
         self.action = action
 
-        button_style = discord.ButtonStyle.danger if action == "add" else discord.ButtonStyle.success
+        button_style = discord.ButtonStyle.danger if action == "add" else discord.ButtonStyle.blurple
         button = discord.ui.Button(label="はじめる", style=button_style)
         button.callback = self.manage_button_callback
         self.add_item(button)
@@ -222,6 +222,7 @@ class PersonalBlacklistManageView(discord.ui.View):
     )
     async def user_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         self.selected_users = select.values
+        await send_interaction_message(interaction,"ユーザーを選択しました。",ephemeral=True)
         
     @discord.ui.button(label="確認", style=discord.ButtonStyle.primary)
     async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
