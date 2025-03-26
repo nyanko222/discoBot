@@ -157,30 +157,21 @@ async def send_interaction_message(
     *,
     ephemeral: bool = True,
 ):
-    """
-    1) interaction.response.defer(thinking=True, ephemeral=ephemeral) で応答を保留
-    2) まだ初回レスポンスを送っていなければ interaction.response.send_message を使用
-       すでに送っていれば interaction.followup.send を使用
-    3) ephemeral=True なら「本人のみ見える」メッセージになるが、delete_after等は基本的に使えない
-    """
-    # ❶ deferで「処理中…」状態を作る
-    await interaction.response.defer(thinking=True, ephemeral=ephemeral)
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True, ephemeral=ephemeral)
+    except discord.InteractionResponded:
+        # すでに応答済み → defer はスキップ
+        pass
 
-    # ❷ 実際のメッセージ送信
-    if not interaction.response.is_done():
-        # 初回レスポンスがまだなら send_message
-        await interaction.response.send_message(
-            content=content,
-            embed=embed,
-            ephemeral=ephemeral
-        )
-    else:
-        # すでに初回レスポンス済みなら followup.send
-        await interaction.followup.send(
-            content=content,
-            embed=embed,
-            ephemeral=ephemeral
-        )
+    # メッセージ送信
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(content=content, embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.followup.send(content=content, embed=embed, ephemeral=ephemeral)
+    except discord.NotFound:
+        pass
 
 #BL管理ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
 @bot.tree.command(name="bl-manage", description="ブラックリストにユーザーを追加/解除するUI (管理者専用)")
@@ -338,7 +329,7 @@ class ShowBlacklistButtonView(discord.ui.View):
         # 1) ユーザーのブラックリストを取得
         blacklist = get_blacklist(interaction.user.id)
         if not blacklist:
-            await send_interaction_message("あなたのブラックリストは空です。", ephemeral=True)
+            await send_interaction_message(interaction, "あなたのブラックリストは空です。", ephemeral=True)
             return
 
         # 2) Embedを組み立て
@@ -351,9 +342,9 @@ class ShowBlacklistButtonView(discord.ui.View):
         # 3) DM送信 → 成功/失敗に応じてメッセージを返す
         try:
             await interaction.user.send(embed=embed)  # DMで送信
-            await send_interaction_message("✅ DMでブラックリストを送信しました。", ephemeral=True)
+            await send_interaction_message(interaction, "✅ DMでブラックリストを送信しました。", ephemeral=True)
         except:
-            await send_interaction_message(
+            await send_interaction_message(interaction, 
                 "⚠️ DMを送信できませんでした。DMが許可されているか確認してください。",
                 ephemeral=True
             )
@@ -448,6 +439,10 @@ class RoomCreationModal(discord.ui.Modal, title="募集メッセージ入力"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+    # ❶ まず最初に defer して「処理中」を伝える
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True, ephemeral=True)
+
            # ここで「ボタンクリック時の interaction」を使わず、
         # モーダルの submit 用 interaction をそのまま渡す
         await create_room_with_gender(
@@ -465,7 +460,7 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
     # 1. 既に部屋があるかチェック
     existing_rooms = get_rooms_by_creator(interaction.user.id)
     if existing_rooms:
-        await send_interaction_message(
+        await send_interaction_message(interaction, 
             "❌ すでに部屋を作成しています。新しい部屋を作成する前に、既存の部屋を削除してください。",
             ephemeral=True
         )
@@ -539,7 +534,7 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         logger.info(f"非表示ロール '{role_name}' を作成しました")
     except Exception as e:
         logger.error(f"非表示ロールの作成に失敗: {str(e)}")
-        await send_interaction_message(f"❌ ロールの作成に失敗しました: {str(e)}", ephemeral=True)
+        await send_interaction_message(interaction, f"❌ ロールの作成に失敗しました: {str(e)}", ephemeral=True)
         return
     
     blacklisted_users = get_blacklist(interaction.user.id)
@@ -573,7 +568,7 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         add_room(text_channel.id, voice_channel.id, interaction.user.id, hidden_role.id, gender, room_message)
         add_admin_log("部屋作成", interaction.user.id, None, f"テキスト:{text_channel.id} ボイス:{voice_channel.id}")
         
-        await send_interaction_message(
+        await send_interaction_message(interaction, 
             f"✅ 通話募集部屋を作成しました！\nテキスト: {text_channel.mention}\nボイス: {voice_channel.mention}",
             ephemeral=True
         )
@@ -609,7 +604,7 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
 
     except Exception as e:
         logger.error(f"部屋の作成に失敗: {str(e)}")
-        await send_interaction_message(f" 部屋の作成に失敗しました: {str(e)}", ephemeral=True)
+        await send_interaction_message(interaction, f" 部屋の作成に失敗しました: {str(e)}", ephemeral=True)
         try:
             await hidden_role.delete()
             logger.info(f"エラーのためロール '{role_name}' を削除しました")
@@ -764,13 +759,13 @@ async def show_room(voice_channel: discord.VoiceChannel, text_channel_id: int, r
 async def delete_room(interaction: discord.Interaction):
     creator_id, role_id, text_channel_id, voice_channel_id = get_room_info(interaction.channel.id)
     if creator_id is None:
-        await send_interaction_message("このコマンドは通話募集部屋でのみ使用できます。", ephemeral=True)
+        await send_interaction_message(interaction, "このコマンドは通話募集部屋でのみ使用できます。", ephemeral=True)
         return
     if creator_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
-        await send_interaction_message("部屋の作成者または管理者のみが部屋を削除できます。", ephemeral=True)
+        await send_interaction_message(interaction, "部屋の作成者または管理者のみが部屋を削除できます。", ephemeral=True)
         return
 
-    await send_interaction_message("部屋を削除しています...", ephemeral=True)
+    await send_interaction_message(interaction, "部屋を削除しています...", ephemeral=True)
 
     # ---- テキストチャンネル削除 ----
     if text_channel_id:
@@ -878,7 +873,7 @@ async def handle_show_rooms(interaction: discord.Interaction):
     member = interaction.user
     viewable_genders = get_user_genders(member)
     if not viewable_genders:
-        await send_interaction_message("現在、募集はありません。", ephemeral=True)
+        await send_interaction_message(interaction, "現在、募集はありません。", ephemeral=True)
         return
 
     # ① DBから性別(gender)に合致する部屋一覧を取得
@@ -894,7 +889,7 @@ async def handle_show_rooms(interaction: discord.Interaction):
         rows = cursor.fetchall()
 
     if not rows:
-        await send_interaction_message("現在、募集はありません。", ephemeral=True)
+        await send_interaction_message(interaction, "現在、募集はありません。", ephemeral=True)
         return
 
     embed = discord.Embed(
@@ -946,9 +941,9 @@ async def handle_show_rooms(interaction: discord.Interaction):
 
     if count == 0:
         # ブラックリストチェックで全部スキップされた場合など
-        await send_interaction_message("現在、募集はありません。", ephemeral=True)
+        await send_interaction_message(interaction, "現在、募集はありません。", ephemeral=True)
     else:
-        await send_interaction_message(embed=embed, ephemeral=True)
+        await send_interaction_message(interaction, embed=embed, ephemeral=True)
 
 
 #管理者用コマンドーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
@@ -962,7 +957,7 @@ async def setup_lobby(interaction: discord.Interaction):
         "男性のみ・女性のみ・どちらでもOK、いずれかのボタンを押すと募集が開始されます。\n募集を見せたい性別を選んでください！"
     )
     await interaction.channel.send(text, view=view)
-    await send_interaction_message("部屋作成ボタン付きメッセージを設置しました！", ephemeral=True)
+    await send_interaction_message(interaction, "部屋作成ボタン付きメッセージを設置しました！", ephemeral=True)
 
 @bot.tree.command(name="setup-room-list-button", description="募集一覧を表示するボタンを設置（管理者用）")
 @app_commands.checks.has_permissions(administrator=True)
@@ -970,7 +965,7 @@ async def setup_room_list_button(interaction: discord.Interaction):
     """管理者向け: 募集一覧を表示するボタンを設置する"""
     view = ShowRoomsView()
     await interaction.channel.send("募集一覧を表示したい場合は、こちらのボタンを押してください。", view=view)
-    await send_interaction_message("募集一覧ボタンを設置しました！", ephemeral=True)
+    await send_interaction_message(interaction, "募集一覧ボタンを設置しました！", ephemeral=True)
 
 @bot.tree.command(name="setup-blacklist-help", description="ブラックリスト関連のコマンド一覧を全体向けのメッセージとして設置（管理者専用）")
 @app_commands.checks.has_permissions(administrator=True)
@@ -1001,7 +996,7 @@ async def setup_blacklist_help(interaction: discord.Interaction):
     )
     # 全体向けにメッセージを送信
     await interaction.channel.send(embed=embed)
-    await send_interaction_message("ブラックリストコマンド一覧を設置しました。", ephemeral=True)
+    await send_interaction_message(interaction, "ブラックリストコマンド一覧を設置しました。", ephemeral=True)
 
 
 @bot.tree.command(name="admin-logs", description="管理者ログを表示（管理者専用）")
@@ -1019,7 +1014,7 @@ async def admin_logs(interaction: discord.Interaction, limit: int = 10):
         """, (limit,))
         logs = cursor.fetchall()
     if not logs:
-        await send_interaction_message("ログはありません。", ephemeral=True)
+        await send_interaction_message(interaction, "ログはありません。", ephemeral=True)
         return
     embed = discord.Embed(title="管理者ログ", color=discord.Color.blue())
     for i, (action, user_id, target_id, details, timestamp) in enumerate(logs):
@@ -1032,7 +1027,7 @@ async def admin_logs(interaction: discord.Interaction, limit: int = 10):
             value=f"実行者: {user_name}\n対象: {target_name}\n詳細: {details}",
             inline=False
         )
-    await send_interaction_message(embed=embed, ephemeral=True)
+    await send_interaction_message(interaction, embed=embed, ephemeral=True)
 
 @bot.tree.command(name="clear-rooms", description="全ての通話募集部屋を削除（管理者専用）")
 @app_commands.checks.has_permissions(administrator=True)
@@ -1043,7 +1038,7 @@ async def clear_rooms(interaction: discord.Interaction):
         cursor.execute("SELECT text_channel_id, voice_channel_id, role_id FROM rooms")
         rooms = cursor.fetchall()
     if not rooms:
-        await send_interaction_message("削除する部屋はありません。", ephemeral=True)
+        await send_interaction_message(interaction, "削除する部屋はありません。", ephemeral=True)
         return
     count = 0
     for text_channel_id, voice_channel_id, role_id in rooms:
@@ -1069,7 +1064,7 @@ async def clear_rooms(interaction: discord.Interaction):
         cursor.execute("DELETE FROM rooms")
         
     add_admin_log("全部屋削除", interaction.user.id, None, f"{count}個の部屋を削除")
-    await send_interaction_message(f"✅ {count}個の部屋を削除しました。", ephemeral=True)
+    await send_interaction_message(interaction, f"✅ {count}個の部屋を削除しました。", ephemeral=True)
 
 #@bot.tree.command(name="bot-help", description="BOTのヘルプを表示")
 #async def bot_help(interaction: discord.Interaction):
@@ -1093,12 +1088,12 @@ async def clear_rooms(interaction: discord.Interaction):
         inline=False
     )
     embed.set_footer(text="ブラックリストに登録されたユーザーには、あなたの部屋が見えなくなります。")
-    await send_interaction_message(embed=embed, ephemeral=True)
+    await send_interaction_message(interaction, embed=embed, ephemeral=True)
 
 @bot.tree.command(name="sync", description="スラッシュコマンドを手動で同期")
 async def sync(interaction: discord.Interaction):
     await bot.tree.sync()
-    await send_interaction_message("✅ コマンドを手動で同期しました！", ephemeral=True)
+    await send_interaction_message(interaction, "✅ コマンドを手動で同期しました！", ephemeral=True)
 
 @bot.event
 async def on_command_error(ctx, error):
