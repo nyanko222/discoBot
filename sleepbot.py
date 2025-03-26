@@ -149,6 +149,7 @@ def get_blacklist(owner_id):
     return blacklist
 
 #汎用関数ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
+#メッセージ送信関数
 async def send_interaction_message(
     interaction: discord.Interaction,
     content: str = None,
@@ -181,52 +182,181 @@ async def send_interaction_message(
             ephemeral=ephemeral
         )
 
-
-#スラッシュコマンド
-@bot.tree.command(name="bl-add", description="ユーザーをブラックリストに追加")
-@app_commands.describe(
-    user="ブラックリストに追加するユーザー",
-    reason="理由（省略可）"
-)
-async def blacklist_add(interaction: discord.Interaction, user: discord.Member, reason: str = "理由なし"):
-    """ユーザーをブラックリストに追加"""
-    if user.id == interaction.user.id:
-        await send_interaction_message(" 自分自身をブラックリストに追加することはできません。", ephemeral=True)
+#BL管理ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
+@bot.tree.command(name="bl-manage", description="ブラックリストにユーザーを追加/解除するUI (管理者専用)")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(action="addで追加、removeで解除")
+async def bl_manage(interaction: discord.Interaction, action: str):
+    """
+    /bl-manage action:add  で「追加モード」
+    /bl-manage action:remove で「解除モード」
+    サーバー参加者全員を検索可能なユーザーセレクトで表示
+    """
+    if action not in ("add", "remove"):
+        await interaction.response.send_message("action は 'add' または 'remove' を指定してください。", ephemeral=True)
         return
-    add_to_blacklist(interaction.user.id, user.id, reason)
-    add_admin_log("ブラックリスト追加", interaction.user.id, user.id, reason)
-    await send_interaction_message(f"✅ {user.mention} をあなたのブラックリストに追加しました。", ephemeral=True)
 
-@bot.tree.command(name="bl-remove", description="ユーザーをブラックリストから削除")
-@app_commands.describe(
-    user="ブラックリストから削除するユーザー"
-)
-async def blacklist_remove(interaction: discord.Interaction, user: discord.Member):
-    """ユーザーをブラックリストから削除"""
-    if remove_from_blacklist(interaction.user.id, user.id):
-        add_admin_log("ブラックリスト削除", interaction.user.id, user.id)
-        await send_interaction_message(f"✅ {user.mention} をあなたのブラックリストから削除しました。", ephemeral=True)
-    else:
-        await send_interaction_message(f" {user.mention} はあなたのブラックリストに登録されていません。", ephemeral=True)
+    view = BlacklistManageView(action)
+    msg = "ブラックリストに追加したいユーザーを検索＆選択してください" if action == "add" else "ブラックリストから解除したいユーザーを検索＆選択してください"
+    await interaction.response.send_message(msg, view=view, ephemeral=True)
 
-@bot.tree.command(name="bl-list", description="自分のブラックリストに登録されているユーザー一覧を表示")
-async def blacklist_list(interaction: discord.Interaction):
-    """自分のブラックリストに登録されているユーザー一覧を表示"""
-    blacklist = get_blacklist(interaction.user.id)
-    if not blacklist:
-        await send_interaction_message("あなたのブラックリストは空です。", ephemeral=True)
-        return
-    embed = discord.Embed(title="あなたのブラックリスト", color=discord.Color.red())
-    for user_id in blacklist:
-        member = interaction.guild.get_member(user_id)
-        user_name = member.display_name if member else f"ID: {user_id}"
-        embed.add_field(name=user_name, value=f"ID: {user_id}", inline=False)
-    try:
-        await interaction.user.send(embed=embed)
-        await send_interaction_message("✅ DMでブラックリストを送信しました。", ephemeral=True)
-    except:
-        await send_interaction_message(" DMを送信できませんでした。DMが許可されているか確認してください。", ephemeral=True)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+
+class BlacklistManageView(discord.ui.View):
+    """
+    1) UserSelect でサーバー内のユーザーを検索・複数選択
+    2) 「確認」ボタンを押すと確認画面へ
+    """
+    def __init__(self, action: str):
+        super().__init__(timeout=60)
+        self.action = action  # "add" or "remove"
+        self.selected_users: list[discord.Member] = []
+
+    # ▼▼▼ 1) UserSelect で検索＆複数選択 ▼▼▼
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
+        placeholder="ユーザーを検索して選択 (複数可)",
+        min_values=1,
+        max_values=25
+    )
+    async def user_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        # 選択されたユーザー（Memberオブジェクト）のリスト
+        self.selected_users = select.values
+        await interaction.response.send_message(
+            "ユーザーを選択しました。下の「確認」ボタンを押してください。",
+            ephemeral=True
+        )
+
+    # ▼▼▼ 2) 「確認」ボタンで最終確認画面へ ▼▼▼
+    @discord.ui.button(label="確認", style=discord.ButtonStyle.primary)
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_users:
+            await interaction.response.send_message("⚠️ ユーザーを選択していません。", ephemeral=True)
+            return
+
+        # Embedを作成
+        if self.action == "add":
+            title = "🛑 以下のユーザーをブラックリストに **追加** しますか？"
+        else:
+            title = "🛑 以下のユーザーをブラックリストから **解除** しますか？"
+
+        embed = discord.Embed(title=title, color=discord.Color.red())
+        for member in self.selected_users:
+            embed.add_field(
+                name=member.display_name,
+                value=f"`{member.name}` (ID: {member.id})",
+                inline=False
+            )
+
+        # 確認用View
+        confirm_view = BlacklistConfirmView(self.action, self.selected_users)
+        await interaction.response.send_message(embed=embed, view=confirm_view, ephemeral=True)
+
+
+class BlacklistConfirmView(discord.ui.View):
+    """
+    「はい/いいえ」で最終的に追加 or 解除を実行
+    """
+    def __init__(self, action: str, users: list[discord.Member]):
+        super().__init__(timeout=30)
+        self.action = action  # "add" or "remove"
+        self.users = users
+
+    @discord.ui.button(label="はい", style=discord.ButtonStyle.danger)
+    async def yes_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        already_in_list = []
+        already_not_in_list = []
+        success_list = []
+
+        bl = get_blacklist(interaction.user.id)  # 操作者のブラックリストを取得
+
+        for member in self.users:
+            user_id = member.id
+            if self.action == "add":
+                if user_id in bl:
+                    # すでに登録済み
+                    already_in_list.append(member)
+                else:
+                    # 新規登録
+                    add_to_blacklist(interaction.user.id, user_id)
+                    success_list.append(member)
+            else:  # remove
+                if user_id not in bl:
+                    # 登録されていない
+                    already_not_in_list.append(member)
+                else:
+                    # 解除
+                    remove_from_blacklist(interaction.user.id, user_id)
+                    success_list.append(member)
+
+        # 結果メッセージを組み立て
+        if self.action == "add":
+            base_msg = "✅ ブラックリストに追加しました。\n"
+        else:
+            base_msg = "✅ ブラックリストから解除しました。\n"
+
+        msg = base_msg
+
+        if self.action == "add" and already_in_list:
+            names = [m.display_name for m in already_in_list]
+            msg += f"⚠️ すでに登録済みのユーザー: {', '.join(names)}\n"
+
+        if self.action == "remove" and already_not_in_list:
+            names = [m.display_name for m in already_not_in_list]
+            msg += f"⚠️ まだ登録されていないユーザー: {', '.join(names)}\n"
+
+        await interaction.response.edit_message(content=msg, embed=None, view=None)
+
+    @discord.ui.button(label="いいえ", style=discord.ButtonStyle.secondary)
+    async def no_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="❌ キャンセルしました。", embed=None, view=None)
+
+#ブラックリスト一覧機能
+@bot.tree.command(name="setup-bl-list-button", description="ブラックリスト一覧ボタンを設置（管理者専用）")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_bl_list_button(interaction: discord.Interaction):
+    """
+    管理者専用コマンド。
+    実行すると、チャンネルに「自分のブラックリストを表示」ボタンを設置する。
+    """
+    view = ShowBlacklistButtonView()
+    await interaction.channel.send(
+        "自分のブラックリストを確認したい場合は、以下のボタンを押してください。",
+        view=view
+    )
+    await interaction.response.send_message("ブラックリスト一覧ボタンを設置しました。", ephemeral=True)
+
+class ShowBlacklistButtonView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="自分のブラックリストを表示", style=discord.ButtonStyle.blurple)
+    async def show_bl_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """
+        ボタンが押されたときに「自分のブラックリストを表示」する。
+        コマンド `/bl-list` とほぼ同じ処理。
+        """
+        # 1) ユーザーのブラックリストを取得
+        blacklist = get_blacklist(interaction.user.id)
+        if not blacklist:
+            await send_interaction_message("あなたのブラックリストは空です。", ephemeral=True)
+            return
+
+        # 2) Embedを組み立て
+        embed = discord.Embed(title="あなたのブラックリスト", color=discord.Color.red())
+        for user_id in blacklist:
+            member = interaction.guild.get_member(user_id)
+            user_name = member.display_name if member else f"ID: {user_id}"
+            embed.add_field(name=user_name, value=f"ID: {user_id}", inline=False)
+
+        # 3) DM送信 → 成功/失敗に応じてメッセージを返す
+        try:
+            await interaction.user.send(embed=embed)  # DMで送信
+            await send_interaction_message("✅ DMでブラックリストを送信しました。", ephemeral=True)
+        except:
+            await send_interaction_message(
+                "⚠️ DMを送信できませんでした。DMが許可されているか確認してください。",
+                ephemeral=True
+            )
 
 #　部屋管理機能ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
 # 部屋管理機能
