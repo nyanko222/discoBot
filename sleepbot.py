@@ -295,7 +295,7 @@ async def setup_bl_list_button(interaction: discord.Interaction):
     """
     view = ShowBlacklistButtonView()
     await interaction.channel.send(
-        "## 📕ブラックリスト一覧ボタン",
+        "\n\n📌苦手な人はいませんか？\n📌ブラックリスト設定は部屋作成前を推奨しています◎\n\n## 📕ブラックリスト一覧ボタン",
         view=view
     )
     await send_interaction_message(interaction,"ブラックリスト一覧ボタンを設置しました。", ephemeral=True)
@@ -304,7 +304,7 @@ class ShowBlacklistButtonView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="自分のブラックリストを表示", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="ブラックリストを見る", style=discord.ButtonStyle.success)
     async def show_bl_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """
         ボタンが押されたときに「自分のブラックリストを表示」する。
@@ -937,8 +937,8 @@ async def setup_lobby(interaction: discord.Interaction):
     """管理者向け: ボタン付きメッセージをチャンネルに設置"""
     view = GenderRoomView(timeout=None)
     text = (
-        "**【募集開始ボタン】**\n"
-        "男性のみ・女性のみ・どちらでもOK、いずれかのボタンを押すと募集が開始されます。\n募集を見せたい性別を選んでください！"
+        "## 📢募集開始ボタン\n"
+        "募集を見せたい性別を選んでください！\n"
     )
     await interaction.channel.send(text, view=view)
     await send_interaction_message(interaction, "部屋作成ボタン付きメッセージを設置しました！", ephemeral=True)
@@ -948,7 +948,7 @@ async def setup_lobby(interaction: discord.Interaction):
 async def setup_room_list_button(interaction: discord.Interaction):
     """管理者向け: 募集一覧を表示するボタンを設置する"""
     view = ShowRoomsView()
-    await interaction.channel.send("募集一覧を表示したい場合は、こちらのボタンを押してください。", view=view)
+    await interaction.channel.send("## 👀募集一覧ボタン\n現在の募集の一覧はこちらからどうぞ！\n", view=view)
     await send_interaction_message(interaction, "募集一覧ボタンを設置しました！", ephemeral=True)
 
 @bot.tree.command(name="setup-blacklist-help", description="ブラックリスト関連のコマンド一覧を全体向けのメッセージとして設置（管理者専用）")
