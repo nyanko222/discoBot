@@ -497,11 +497,6 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         # @everyone も不可視
         overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
         
-#　作成者には可視
-    overwrites[interaction.user] = discord.PermissionOverwrite(
-    read_messages=True,
-    connect=True
-)
        # ▼▼▼ ここがポイント：ロール名の生成をハッシュ方式に変更 ▼▼▼
     # 衝突を防ぎつつ、誰のロールかわからないように匿名性を担保
     random_salt = secrets.token_hex(8)  # 乱数生成
@@ -534,6 +529,13 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
     # 上で設定した overwrites をそのまま使いつつ、hidden_role だけ追加
     overwrites[hidden_role] = discord.PermissionOverwrite(
         read_messages=False, view_channel=False, connect=False
+    )
+
+#作成者には常に可視
+    overwrites[interaction.user] = discord.PermissionOverwrite(
+    view_channel=True,
+    read_messages=True,
+    connect=True
     )
 
     try:
