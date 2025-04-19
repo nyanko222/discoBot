@@ -81,16 +81,6 @@ def init_db():
         conn.commit()
     logger.info("データベース初期化完了")
 
-@bot.event
-async def on_ready():
-    logger.info(f'BOTにログインしました: {bot.user.name}')
-    init_db()
-    try:
-        await bot.tree.sync()
-        logger.info("Slashコマンドの同期に成功しました。")
-    except Exception as e:
-        logger.error(f"Slashコマンドの同期に失敗: {e}")
-
 
     # DB関連ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
     #ロルバ対応DB処理
@@ -583,8 +573,31 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         )
         if room_message:
             message_text += f"📝 募集の詳細\n{room_message}\n\n"
+
         
-        message_text += f"{role_mention_str}\n部屋の作成者は `/delete-room` コマンドでこの部屋を削除できます。\n"
+        # --- 性別ロールから自己紹介チャンネルを特定 ---
+        male_role = discord.utils.get(interaction.guild.roles, name="男性")
+        female_role = discord.utils.get(interaction.guild.roles, name="女性")
+
+        if female_role in interaction.user.roles:
+            intro_channel_name = "🚺自己紹介（女性）"
+        elif male_role in interaction.user.roles:
+            intro_channel_name = "🚹自己紹介（男性）"
+        else:
+            intro_channel_name = None
+
+        intro_text = "自己紹介は記入されていません。"
+
+        if intro_channel_name:
+            intro_channel = discord.utils.get(interaction.guild.text_channels, name=intro_channel_name)
+            if intro_channel:
+                async for msg in intro_channel.history(limit=100):
+                    if msg.author.id == interaction.user.id:
+                        intro_text = f"自己紹介はこちら → {msg.jump_url}"
+                        break
+
+        message_text += f"\n{intro_text}"   
+        message_text += f"\n\n{role_mention_str}\n部屋の作成者は `/delete-room` コマンドでこの部屋を削除できます。\n"
 
         await text_channel.send(message_text)
 
@@ -652,6 +665,15 @@ async def check_room_capacity(voice_channel: discord.VoiceChannel):
         await hide_room(voice_channel, text_channel_id, role_id, creator_id)
     else:
         await show_room(voice_channel, text_channel_id, role_id, creator_id, gender)
+    
+        # ★ここで部屋作成者に対する権限を明示的に追加
+    creator = guild.get_member(creator_id)
+    if creator:
+        overwrites[creator] = discord.PermissionOverwrite(
+            view_channel=True,
+            read_messages=True,
+            connect=True
+        )
 
     # 例: 人数上限を「(人間+Bot) + 1」に設定
     total_count = human_count + bot_count
@@ -731,6 +753,15 @@ async def show_room(voice_channel: discord.VoiceChannel, text_channel_id: int, r
             overwrites[male_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
         if female_role:
             overwrites[female_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
+
+        # ★ここで部屋作成者に対する権限を明示的に追加
+    creator = guild.get_member(creator_id)
+    if creator:
+        overwrites[creator] = discord.PermissionOverwrite(
+            view_channel=True,
+            read_messages=True,
+            connect=True
+        )
 
     try:
         if text_channel:
@@ -1222,17 +1253,24 @@ async def daily_backup_task():
             files=files_to_send
         )
 
-@daily_backup_task.before_loop
-async def before_daily_backup_task():
+#@daily_backup_task.before_loop
+#async def before_daily_backup_task():
     """Botが起動し、準備ができるまで待機する"""
-    await bot.wait_until_ready()
+ #   await bot.wait_until_ready()
 
 # on_ready のタイミングや、ファイル末尾などで起動時にタスクをスタート
 @bot.event
 async def on_ready():
+    logger.info(f'BOTにログインしました: {bot.user.name}')
     print(f'BOTにログインしました: {bot.user.name}')
+    init_db()
     daily_backup_task.start()
-    # すでにon_readyがあれば追記してください。
+    try:
+        await bot.tree.sync()
+        logger.info("Slashコマンドの同期に成功しました。")
+    except Exception as e:
+        logger.error(f"Slashコマンドの同期に失敗: {e}")
+
 
 
 # トークン付与
