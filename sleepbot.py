@@ -666,14 +666,6 @@ async def check_room_capacity(voice_channel: discord.VoiceChannel):
     else:
         await show_room(voice_channel, text_channel_id, role_id, creator_id, gender)
     
-        # ★ここで部屋作成者に対する権限を明示的に追加
-    creator = guild.get_member(creator_id)
-    if creator:
-        overwrites[creator] = discord.PermissionOverwrite(
-            view_channel=True,
-            read_messages=True,
-            connect=True
-        )
 
     # 例: 人数上限を「(人間+Bot) + 1」に設定
     total_count = human_count + bot_count
@@ -1254,9 +1246,9 @@ async def daily_backup_task():
         )
 
 #@daily_backup_task.before_loop
-#async def before_daily_backup_task():
+async def before_daily_backup_task():
     """Botが起動し、準備ができるまで待機する"""
- #   await bot.wait_until_ready()
+    await bot.wait_until_ready()
 
 # on_ready のタイミングや、ファイル末尾などで起動時にタスクをスタート
 @bot.event
@@ -1271,7 +1263,18 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Slashコマンドの同期に失敗: {e}")
 
+#生存報告機能
+KEEPALIVE_CHANNEL_ID = 1353622624860766308  # 任意のチャンネルID
 
+@tasks.loop(minutes=15)
+async def keepalive_task():
+    await bot.wait_until_ready()
+    now = datetime.datetime.now().strftime("%m月%d日%H時%M分")
+    channel = bot.get_channel(KEEPALIVE_CHANNEL_ID)
+    if channel:
+        await channel.send(f"{now}、生存！")
+    else:
+        logger.warning(f"生存報告チャンネルが見つかりません: ID={KEEPALIVE_CHANNEL_ID}")
 
 # トークン付与
 # .envファイルの読み込み
