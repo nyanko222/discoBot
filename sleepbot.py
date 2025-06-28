@@ -2,6 +2,7 @@ import discord
 
 import sqlite3
 import os
+import zipfile
 
 import logging
 import secrets
@@ -9,12 +10,17 @@ import hashlib
 import shutil
 import glob
 import datetime
+import asyncio
 
 from discord.ext import commands
 from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 from contextlib import contextmanager
+from pydrive.auth import GoogleAuth
+from pydrive.files import FileNotUploadedError
+from googleapiclient.http import MediaFileUpload
+
 
 # ロギング設定
 logging.basicConfig(
@@ -39,6 +45,13 @@ def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
+
+# === BU設定 ===
+DB_FILE = "blacklist.db"
+ZIP_DIR = "./"
+BACKUP_PREFIX = "backup_"
+ZIP_KEEP_DAYS = 3
+LOG_KEEP_DAYS = 14
 
 # データベース初期化
 def init_db():
@@ -544,6 +557,8 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         add_room(text_channel.id, voice_channel.id, interaction.user.id, hidden_role.id, gender, room_message)
         add_admin_log("部屋作成", interaction.user.id, None, f"テキスト:{text_channel.id} ボイス:{voice_channel.id}")
         
+
+
         await send_interaction_message(interaction, 
             f"✅ 通話募集部屋を作成しました！\nテキスト: {text_channel.mention}\nボイス: {voice_channel.mention}",
             ephemeral=True
@@ -591,14 +606,14 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         if intro_channel_name:
             intro_channel = discord.utils.get(interaction.guild.text_channels, name=intro_channel_name)
             if intro_channel:
-                async for msg in intro_channel.history(limit=100):
+                async for msg in intro_channel.history(limit=None):
                     if msg.author.id == interaction.user.id:
                         intro_text = f"自己紹介はこちら → {msg.jump_url}"
                         break
 
         message_text += f"\n{intro_text}"   
-        message_text += f"\n\n{role_mention_str}\n部屋の作成者は `/delete-room` コマンドでこの部屋を削除できます。\n"
-
+        message_text += f"\n\n{role_mention_str}\n部屋の作成者は `/delete-room` コマンドでこの部屋を削除できます。\n\nこの部屋は「通話」を前提とした募集用です。\nDMでのやり取りのみが目的の方は利用をご遠慮ください。\nそのような行為を繰り返していると判断された場合、利用制限などの措置対象となります。"
+        allowed_mentions=discord.AllowedMentions(roles=True)
         await text_channel.send(message_text)
 
     except Exception as e:
@@ -890,7 +905,7 @@ async def handle_show_rooms(interaction: discord.Interaction):
         cursor = conn.cursor()
         placeholders = ",".join("?" * len(viewable_genders))
         query = f"""
-            SELECT creator_id, text_channel_id, details, gender
+            SELECT creator_id, text_channel_id, voice_channel_id, details, gender
             FROM rooms
             WHERE gender IN ({placeholders})
         """
@@ -908,13 +923,19 @@ async def handle_show_rooms(interaction: discord.Interaction):
     )
 
     count = 0
-    for (creator_id, text_channel_id, details, gender) in rows:
+    for (creator_id, text_channel_id, voice_channel_id, details, gender) in rows:
         # ② 作成者のブラックリストを取得
         creator_blacklist = get_blacklist(creator_id)
         # ③ ボタンを押したユーザーがブラックリストに含まれているか？
         if member.id in creator_blacklist:
             # 含まれていれば「この部屋は非表示」にする
             continue
+
+        voice_channel = interaction.guild.get_channel(voice_channel_id)
+        if voice_channel:
+            human_members = [m for m in voice_channel.members if not m.bot]
+            if len(human_members) >= 2:
+                continue  # 満室なので表示しない
 
         # ④ 通常の表示処理
         creator = interaction.guild.get_member(creator_id)
@@ -1183,6 +1204,21 @@ async def daily_backup_task():
     2) 7日以上前のバックアップを削除
     3) 指定チャンネルへバックアップファイルを送信
     """
+    # === SQLiteログ削除（2週間前より前） ===
+    now = datetime.datetime.now()
+    cutoff_date = (now - datetime.timedelta(days=LOG_KEEP_DAYS)).isoformat()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM admin_logs WHERE timestamp < ?", (cutoff_date,))
+        conn.commit()
+        print("古いログ削除完了")
+    except Exception as e:
+        print(f"ログ削除中にエラー: {e}")
+    finally:
+        conn.close()
+
+
     # 1) バックアップファイルの作成
     os.makedirs(BACKUP_FOLDER, exist_ok=True)
 
@@ -1222,7 +1258,7 @@ async def daily_backup_task():
             print(f"[CleanupError] 古いバックアップ削除時にエラー: {e}")
 
     # 3) ディスコードの特定チャンネルへバックアップファイルを送信
-    CHANNEL_ID_FOR_BACKUP = 1352915915263443014
+    CHANNEL_ID_FOR_BACKUP = 1370282144181784616
     channel = bot.get_channel(CHANNEL_ID_FOR_BACKUP)
     if channel is None:
         print(f"[BackupWarn] 指定チャンネル (ID={CHANNEL_ID_FOR_BACKUP}) が見つかりません。送信をスキップします。")
@@ -1244,8 +1280,43 @@ async def daily_backup_task():
             content=f"バックアップ完了: {timestamp}\n古いバックアップ(7日以上)は自動削除しています。",
             files=files_to_send
         )
+        # === ZIP作成 ===
+    now = datetime.datetime.now()
+    timestamp = now.strftime("%Y%m%d_%H%M")
+    zip_name = f"{BACKUP_PREFIX}{timestamp}.zip"
+    zip_path = os.path.join(ZIP_DIR, zip_name)
 
-#@daily_backup_task.before_loop
+    with zipfile.ZipFile(zip_path, 'w') as zipf:
+        zipf.write(DB_FILE)
+
+    # === Google Drive認証・アップロード ===
+    gauth = GoogleAuth()
+    gauth.LoadCredentialsFile("mycreds.txt")
+    if not gauth.credentials:
+        gauth.LocalWebserverAuth()
+        gauth.SaveCredentialsFile("mycreds.txt")
+
+    drive = GoogleDrive(gauth)
+
+    file_drive = drive.CreateFile({'title': zip_name})
+    file_drive.SetContentFile(zip_path)
+    file_drive.Upload()
+
+    # === Google Drive: 古いファイル削除 ===
+    cutoff = now - datetime.timedelta(days=ZIP_KEEP_DAYS)
+    file_list = drive.ListFile({'q': f"title contains '{BACKUP_PREFIX}'"}).GetList()
+    for file in file_list:
+        try:
+            # タイトルから日付を抽出して判断（ファイル名形式が正しいこと前提）
+            date_str = file['title'].replace(BACKUP_PREFIX, "").replace(".zip", "")
+            file_time = datetime.strptime(date_str, "%Y%m%d_%H%M")
+            if file_time < cutoff:
+                file.Delete()
+                print(f"Deleted old backup: {file['title']}")
+        except Exception as e:
+            print(f"Skip deleting {file['title']}: {e}")
+
+@daily_backup_task.before_loop
 async def before_daily_backup_task():
     """Botが起動し、準備ができるまで待機する"""
     await bot.wait_until_ready()
@@ -1256,7 +1327,10 @@ async def on_ready():
     logger.info(f'BOTにログインしました: {bot.user.name}')
     print(f'BOTにログインしました: {bot.user.name}')
     init_db()
-    daily_backup_task.start()
+    if not daily_backup_task.is_running():
+        daily_backup_task.start()
+    if not keepalive_task.is_running():
+        keepalive_task.start()
     try:
         await bot.tree.sync()
         logger.info("Slashコマンドの同期に成功しました。")
