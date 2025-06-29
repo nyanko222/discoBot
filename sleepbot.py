@@ -1,9 +1,7 @@
 import discord
-
 import sqlite3
 import os
 import zipfile
-
 import logging
 import secrets
 import hashlib
@@ -17,12 +15,10 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 from contextlib import contextmanager
-from pydrive.auth import GoogleAuth
-from pydrive.files import FileNotUploadedError
-from googleapiclient.http import MediaFileUpload
 
-
+# =====================================================
 # ロギング設定
+# =====================================================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -33,30 +29,56 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SleepBot")
 
-# BOTの設定
+# =====================================================
+# BOT設定
+# =====================================================
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 
+# =====================================================
+# 定数設定
+# =====================================================
 DB_PATH = 'blacklist.db'
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    return conn
-
-# === BU設定 ===
 DB_FILE = "blacklist.db"
 ZIP_DIR = "./"
 BACKUP_PREFIX = "backup_"
 ZIP_KEEP_DAYS = 3
 LOG_KEEP_DAYS = 14
+BACKUP_FOLDER = "backups"
+BACKUP_FLAG_FILE = os.path.join("backups", ".backup_flag")
+KEEPALIVE_CHANNEL_ID = 1353622624860766308
+BACKUP_CHANNEL_ID = 1370282144181784616
 
-# データベース初期化
+# =====================================================
+# データベース関連
+# =====================================================
+def get_db_connection():
+    """データベース接続を取得"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
+
+@contextmanager
+def safe_db_context():
+    """ロールバック対応のDB処理コンテキスト"""
+    conn = get_db_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"[DB Error] 処理中にエラー発生: {e}")
+        raise
+    finally:
+        conn.close()
+
 def init_db():
+    """データベース初期化"""
     with safe_db_context() as conn:
         cursor = conn.cursor()
+        
         # ユーザーごとのブラックリスト
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_blacklists (
@@ -67,6 +89,7 @@ def init_db():
             PRIMARY KEY (owner_id, blocked_user_id)
         )
         ''')
+        
         # 部屋情報
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS rooms (
@@ -80,6 +103,7 @@ def init_db():
             details TEXT
         )
         ''')
+        
         # 管理者ログ
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS admin_logs (
@@ -91,68 +115,59 @@ def init_db():
             timestamp TIMESTAMP
         )
         ''')
+        
         conn.commit()
     logger.info("データベース初期化完了")
 
-
-    # DB関連ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
-    #ロルバ対応DB処理
-@contextmanager
-def safe_db_context():
-    conn = get_db_connection()
-    try:
-        yield conn
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"[DB Error] 処理中にエラー発生: {e}")
-        raise
-    finally:
-        conn.close()
-
-    # 管理者ログ機能
+# =====================================================
+# ログ管理機能
+# =====================================================
 def add_admin_log(action, user_id, target_id=None, details=""):
+    """管理者ログを追加"""
     with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO admin_logs (action, user_id, target_id, details, timestamp) VALUES (?, ?, ?, ?, ?)",
             (action, user_id, target_id, details, datetime.datetime.now())
         )
-        
     logger.info(f"管理者ログ: {action} - ユーザー: {user_id} - 対象: {target_id} - 詳細: {details}")
 
-
+# =====================================================
 # ブラックリスト機能
+# =====================================================
 def add_to_blacklist(owner_id, blocked_user_id, reason=""):
+    """ブラックリストに追加"""
     with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT OR REPLACE INTO user_blacklists (owner_id, blocked_user_id, reason, added_at) VALUES (?, ?, ?, ?)",
             (owner_id, blocked_user_id, reason, datetime.datetime.now())
         )
-        
     logger.info(f"ブラックリスト追加: ユーザー {owner_id} が {blocked_user_id} をブロック - 理由: {reason}")
 
 def remove_from_blacklist(owner_id, blocked_user_id):
+    """ブラックリストから削除"""
     with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM user_blacklists WHERE owner_id = ? AND blocked_user_id = ?", 
                       (owner_id, blocked_user_id))
         result = cursor.rowcount > 0
-        
+    
     if result:
         logger.info(f"ブラックリスト削除: ユーザー {owner_id} が {blocked_user_id} のブロックを解除")
     return result
 
 def get_blacklist(owner_id):
+    """ブラックリストを取得"""
     with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT blocked_user_id FROM user_blacklists WHERE owner_id = ?", (owner_id,))
         blacklist = [row[0] for row in cursor.fetchall()]
     return blacklist
 
-#汎用関数ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
-#メッセージ関数
+# =====================================================
+# 汎用ヘルパー関数
+# =====================================================
 async def send_interaction_message(
     interaction: discord.Interaction,
     content: str = None,
@@ -161,6 +176,7 @@ async def send_interaction_message(
     ephemeral: bool = True,
     already_deferred: bool = False,
 ):
+    """インタラクションメッセージ送信のヘルパー関数"""
     kwargs = {
         "content": content,
         "embed": embed,
@@ -174,19 +190,31 @@ async def send_interaction_message(
     else:
         await interaction.followup.send(**kwargs)
 
+def get_user_genders(member: discord.Member) -> set[str]:
+    """ユーザーが閲覧できるgenderのセットを返す"""
+    roleset = set()
+    male_role = discord.utils.get(member.roles, name="男性")
+    female_role = discord.utils.get(member.roles, name="女性")
 
+    if male_role:
+        roleset.add("male")
+    if female_role:
+        roleset.add("female")
 
-#BL管理ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
-# 管理者がコマンドでUIを設置する部分（管理者専用）
+    # "all" は、いずれかのロールがある人は閲覧可能
+    if roleset:
+        roleset.add("all")
+
+    return roleset
+
+# =====================================================
+# ブラックリスト管理UI
+# =====================================================
 @bot.tree.command(name="bl-manage", description="ブラックリスト管理のボタン設置 (管理者専用)")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(action="addで追加、removeで解除")
 async def bl_manage_setup(interaction: discord.Interaction, action: str):
-    """
-    /bl-manage-setup action:add  で「追加モード」
-    /bl-manage-setup action:remove で「解除モード」
-    管理者が設置したボタンを誰でも押して、自分のブラックリストを操作できるUIを起動します。
-    """
+    """ブラックリスト管理UI設置"""
     if action not in ("add", "remove"):
         await send_interaction_message(interaction, "action は 'add' または 'remove' を指定してください。", ephemeral=True)
         return
@@ -195,10 +223,10 @@ async def bl_manage_setup(interaction: discord.Interaction, action: str):
     msg = "## 💔ブラックリスト追加ボタン" if action == "add" else "## 💙ブラックリスト解除ボタン"
     await send_interaction_message(interaction, msg, view=view, ephemeral=False)
 
-#ボタン
 class GlobalBlacklistButtonView(discord.ui.View):
+    """グローバルブラックリストボタンView"""
     def __init__(self, action: str):
-        super().__init__(timeout=None)  # 永続化したい場合はtimeout=Noneに
+        super().__init__(timeout=None)
         self.action = action
 
         button_style = discord.ButtonStyle.danger if action == "add" else discord.ButtonStyle.blurple
@@ -207,11 +235,11 @@ class GlobalBlacklistButtonView(discord.ui.View):
         self.add_item(button)
 
     async def manage_button_callback(self, interaction: discord.Interaction):
-        # ユーザーがボタンを押すと、自分専用のブラックリスト管理UI（ユーザーセレクト付きView）を送信
         view = PersonalBlacklistManageView(self.action)
         await send_interaction_message(interaction, "対象ユーザーを選択して、確認を押してください。", view=view, ephemeral=True)
 
 class PersonalBlacklistManageView(discord.ui.View):
+    """個人ブラックリスト管理View"""
     def __init__(self, action: str):
         super().__init__(timeout=60)
         self.action = action
@@ -234,9 +262,9 @@ class PersonalBlacklistManageView(discord.ui.View):
             await send_interaction_message(interaction, "⚠️ ユーザーが選択されていません。", ephemeral=True)
             return
 
-        # 確認用のEmbed作成
         title = "🛑 以下のユーザーをブラックリストに **追加** しますか？" if self.action == "add" else "🛑 以下のユーザーをブラックリストから **解除** しますか？"
         embed = discord.Embed(title=title, color=discord.Color.red())
+        
         for member in self.selected_users:
             embed.add_field(name=member.display_name, value=f"`{member.name}` (ID: {member.id})", inline=False)
 
@@ -244,6 +272,7 @@ class PersonalBlacklistManageView(discord.ui.View):
         await send_interaction_message(interaction, embed=embed, view=confirm_view, ephemeral=True)
 
 class PersonalBlacklistConfirmView(discord.ui.View):
+    """ブラックリスト確認View"""
     def __init__(self, action: str, users: list[discord.Member]):
         super().__init__(timeout=30)
         self.action = action
@@ -253,9 +282,8 @@ class PersonalBlacklistConfirmView(discord.ui.View):
     async def yes_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         already_in_list = []
         already_not_in_list = []
-        # ボタンを押したユーザー自身のブラックリストを取得
         user_id = interaction.user.id
-        bl = get_blacklist(user_id)  # あらかじめ実装済みの関数
+        bl = get_blacklist(user_id)
 
         for member in self.users:
             target_id = member.id
@@ -263,12 +291,12 @@ class PersonalBlacklistConfirmView(discord.ui.View):
                 if target_id in bl:
                     already_in_list.append(member)
                 else:
-                    add_to_blacklist(user_id, target_id)  # ブラックリストへの追加処理
-            else:  # removeの場合
+                    add_to_blacklist(user_id, target_id)
+            else:  # remove
                 if target_id not in bl:
                     already_not_in_list.append(member)
                 else:
-                    remove_from_blacklist(user_id, target_id)  # ブラックリストからの解除処理
+                    remove_from_blacklist(user_id, target_id)
 
         base_msg = "✅ ブラックリストに追加しました。" if self.action == "add" else "✅ ブラックリストから解除しました。"
         msg = base_msg
@@ -286,49 +314,40 @@ class PersonalBlacklistConfirmView(discord.ui.View):
     async def no_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await send_interaction_message(interaction, "キャンセルしました。", ephemeral=True)
 
-
-
-#ブラックリスト一覧機能
+# =====================================================
+# ブラックリスト一覧機能
+# =====================================================
 @bot.tree.command(name="setup-bl-list-button", description="ブラックリスト一覧ボタンを設置（管理者専用）")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_bl_list_button(interaction: discord.Interaction):
-    """
-    管理者専用コマンド。
-    実行すると、チャンネルに「自分のブラックリストを表示」ボタンを設置する。
-    """
+    """ブラックリスト一覧ボタンを設置"""
     view = ShowBlacklistButtonView()
     await interaction.channel.send(
         "\n\n📌苦手な人はいませんか？\n📌ブラックリスト設定は部屋作成前を推奨しています◎\n\n## 📕ブラックリスト一覧ボタン",
         view=view
     )
-    await send_interaction_message(interaction,"ブラックリスト一覧ボタンを設置しました。", ephemeral=True)
+    await send_interaction_message(interaction, "ブラックリスト一覧ボタンを設置しました。", ephemeral=True)
 
 class ShowBlacklistButtonView(discord.ui.View):
+    """ブラックリスト一覧表示ボタンView"""
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="ブラックリストを見る", style=discord.ButtonStyle.success)
     async def show_bl_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """
-        ボタンが押されたときに「自分のブラックリストを表示」する。
-        コマンド `/bl-list` とほぼ同じ処理。
-        """
-        # 1) ユーザーのブラックリストを取得
         blacklist = get_blacklist(interaction.user.id)
         if not blacklist:
             await send_interaction_message(interaction, "あなたのブラックリストは空です。", ephemeral=True)
             return
 
-        # 2) Embedを組み立て
         embed = discord.Embed(title="あなたのブラックリスト", color=discord.Color.red())
         for user_id in blacklist:
             member = interaction.guild.get_member(user_id)
             user_name = member.display_name if member else f"ID: {user_id}"
             embed.add_field(name=user_name, value=f"ID: {user_id}", inline=False)
 
-        # 3) DM送信 → 成功/失敗に応じてメッセージを返す
         try:
-            await interaction.user.send(embed=embed)  # DMで送信
+            await interaction.user.send(embed=embed)
             await send_interaction_message(interaction, "✅ DMでブラックリストを送信しました。", ephemeral=True)
         except:
             await send_interaction_message(interaction, 
@@ -336,10 +355,95 @@ class ShowBlacklistButtonView(discord.ui.View):
                 ephemeral=True
             )
 
-#　部屋管理機能ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
+# =====================================================
 # 部屋管理機能
-# ④ GenderRoomView 内の各ボタン処理を変更し、Modal を表示するようにする
+# =====================================================
+def add_room(text_channel_id, voice_channel_id, creator_id, role_id, gender: str, details: str):
+    """部屋をデータベースに追加"""
+    with safe_db_context() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO rooms (text_channel_id, voice_channel_id, creator_id, created_at, role_id, gender, details) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (text_channel_id, voice_channel_id, creator_id, datetime.datetime.now(), role_id, gender, details)
+        )
+        room_id = cursor.lastrowid
+    
+    logger.info(f"部屋作成: ユーザー {creator_id} がテキスト:{text_channel_id} ボイス:{voice_channel_id} を作成")
+    return room_id
+
+def get_rooms_by_creator(creator_id):
+    """作成者IDで部屋を取得"""
+    with safe_db_context() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT text_channel_id, voice_channel_id FROM rooms WHERE creator_id = ?", (creator_id,))
+        rooms = cursor.fetchall()
+    return rooms
+
+def remove_room(text_channel_id=None, voice_channel_id=None):
+    """部屋をデータベースから削除"""
+    with safe_db_context() as conn:
+        cursor = conn.cursor()
+        if text_channel_id:
+            cursor.execute("SELECT role_id, creator_id, voice_channel_id FROM rooms WHERE text_channel_id = ?", (text_channel_id,))
+        elif voice_channel_id:
+            cursor.execute("SELECT role_id, creator_id, text_channel_id FROM rooms WHERE voice_channel_id = ?", (voice_channel_id,))
+        else:
+            return None, None, None
+        
+        result = cursor.fetchone()
+        if not result:
+            return None, None, None
+        
+        role_id, creator_id, other_channel_id = result
+        
+        if text_channel_id:
+            cursor.execute("DELETE FROM rooms WHERE text_channel_id = ?", (text_channel_id,))
+            logger.info(f"部屋削除: テキストチャンネル {text_channel_id} を削除")
+        elif voice_channel_id:
+            cursor.execute("DELETE FROM rooms WHERE voice_channel_id = ?", (voice_channel_id,))
+            logger.info(f"部屋削除: ボイスチャンネル {voice_channel_id} を削除")
+    
+    return role_id, creator_id, other_channel_id
+
+def get_room_info(channel_id):
+    """チャンネルIDから部屋情報を取得"""
+    with safe_db_context() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT creator_id, role_id, text_channel_id, voice_channel_id FROM rooms WHERE text_channel_id = ? OR voice_channel_id = ?", 
+                      (channel_id, channel_id))
+        result = cursor.fetchone()
+    
+    if not result:
+        return None, None, None, None
+    return result
+
+class RoomCreationModal(discord.ui.Modal, title="募集メッセージ入力"):
+    """部屋作成用モーダル"""
+    def __init__(self, gender: str):
+        super().__init__()
+        self.gender = gender
+    
+    room_message = discord.ui.TextInput(
+        label="募集の詳細 (任意, 最大200文字)",
+        style=discord.TextStyle.paragraph,
+        max_length=200,
+        required=False,
+        default="【いつから】\n【いつまで】\n【目的】\n【NG】\n【一言】",
+        placeholder="ここに募集の詳細を入力してください (省略可)"
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True, ephemeral=True)
+        
+        await create_room_with_gender(
+            interaction,
+            self.gender,
+            room_message=self.room_message.value
+        )
+
 class GenderRoomView(discord.ui.View):
+    """性別選択ボタンView"""
     def __init__(self, timeout=None):
         super().__init__(timeout=timeout)
 
@@ -347,8 +451,6 @@ class GenderRoomView(discord.ui.View):
     async def male_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = RoomCreationModal(gender="male")
         await interaction.response.send_modal(modal)
-        # ※ ここで「self.disable_all_items()」や「edit_message」は行わない。
-        #    なぜなら、モーダルを送信した時点でInteractionは応答済みになるため。
 
     @discord.ui.button(label="女性のみ", style=discord.ButtonStyle.danger)
     async def female_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -360,91 +462,9 @@ class GenderRoomView(discord.ui.View):
         modal = RoomCreationModal(gender="all")
         await interaction.response.send_modal(modal)
 
-def add_room(text_channel_id, voice_channel_id, creator_id, role_id, gender: str, details: str):
-    with safe_db_context() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO rooms (text_channel_id, voice_channel_id, creator_id, created_at, role_id, gender, details) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (text_channel_id, voice_channel_id, creator_id, datetime.datetime.now(), role_id, gender, details)
-        )
-        room_id = cursor.lastrowid
-        
-    logger.info(f"部屋作成: ユーザー {creator_id} がテキスト:{text_channel_id} ボイス:{voice_channel_id} を作成")
-    return room_id
-
-def get_rooms_by_creator(creator_id):
-    with safe_db_context() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT text_channel_id, voice_channel_id FROM rooms WHERE creator_id = ?", (creator_id,))
-        rooms = cursor.fetchall()
-    return rooms
-
-def remove_room(text_channel_id=None, voice_channel_id=None):
-    with safe_db_context() as conn:
-        cursor = conn.cursor()
-        if text_channel_id:
-            cursor.execute("SELECT role_id, creator_id, voice_channel_id FROM rooms WHERE text_channel_id = ?", (text_channel_id,))
-        elif voice_channel_id:
-            cursor.execute("SELECT role_id, creator_id, text_channel_id FROM rooms WHERE voice_channel_id = ?", (voice_channel_id,))
-        else:
-            return None, None, None
-        result = cursor.fetchone()
-        if not result:
-            return None, None, None
-        role_id, creator_id, other_channel_id = result
-        if text_channel_id:
-            cursor.execute("DELETE FROM rooms WHERE text_channel_id = ?", (text_channel_id,))
-            logger.info(f"部屋削除: テキストチャンネル {text_channel_id} を削除")
-        elif voice_channel_id:
-            cursor.execute("DELETE FROM rooms WHERE voice_channel_id = ?", (voice_channel_id,))
-            logger.info(f"部屋削除: ボイスチャンネル {voice_channel_id} を削除")
-        
-    return role_id, creator_id, other_channel_id
-
-def get_room_info(channel_id):
-    with safe_db_context() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT creator_id, role_id, text_channel_id, voice_channel_id FROM rooms WHERE text_channel_id = ? OR voice_channel_id = ?", 
-                      (channel_id, channel_id))
-        result = cursor.fetchone()
-    if not result:
-        return None, None, None, None
-    return result
-
-# ユーザー入力用の Modal クラス
-class RoomCreationModal(discord.ui.Modal, title="募集メッセージ入力"):
-    def __init__(self, gender: str):
-        super().__init__()
-        self.gender = gender
-    room_message = discord.ui.TextInput(
-        label="募集の詳細 (任意, 最大200文字)",
-        style=discord.TextStyle.paragraph,
-        max_length=200,
-        required=False,
-        default="【いつから】\n【いつまで】\n【目的】\n【NG】\n【一言】",
-        placeholder="ここに募集の詳細を入力してください (省略可)"
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-    # ❶ まず最初に defer して「処理中」を伝える
-        if not interaction.response.is_done():
-            await interaction.response.defer(thinking=True, ephemeral=True)
-
-           # ここで「ボタンクリック時の interaction」を使わず、
-        # モーダルの submit 用 interaction をそのまま渡す
-        await create_room_with_gender(
-            interaction,
-            self.gender,
-            room_message=self.room_message.value
-        )
-#部屋作成関数
-# 部屋作成コマンド``
-async def create_room_with_gender(interaction: discord.Interaction, gender: str, capacity: int = 2,room_message: str = ""):
-    """
-    ボタンが押された際に実行される部屋作成ロジック。
-    gender: 'male', 'female', 'all'
-    """
-    # 1. 既に部屋があるかチェック
+async def create_room_with_gender(interaction: discord.Interaction, gender: str, capacity: int = 2, room_message: str = ""):
+    """部屋作成のメイン処理"""
+    # 既存部屋チェック
     existing_rooms = get_rooms_by_creator(interaction.user.id)
     if existing_rooms:
         await send_interaction_message(interaction, 
@@ -453,59 +473,45 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         )
         return
 
-    # 2. 部屋名の設定
+    # 部屋名とカテゴリ設定
     room_name = f"{interaction.user.display_name}の通話募集"
-
-    # 3. カテゴリの取得 or 作成
     category_name = f"{interaction.user.display_name}の通話募集-{interaction.user.id}"
     category = discord.utils.get(interaction.guild.categories, name=category_name)
+    
     if not category:
         category = await interaction.guild.create_category(category_name)
         logger.info(f"カテゴリー '{category_name}' を作成しました")
 
-# 4. チャンネル権限設定 (男性向け/女性向け/両方)
+    # 権限設定
     male_role = discord.utils.get(interaction.guild.roles, name="男性")
     female_role = discord.utils.get(interaction.guild.roles, name="女性")
 
-    # デフォルト: 全員が見えない
     overwrites = {
         interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False, connect=False),
         interaction.guild.me: discord.PermissionOverwrite(read_messages=False, send_messages=False, connect=False)
     }
-    if gender == "male":
-        # 男性だけ可視
-        if male_role:
-            overwrites[male_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
-        # 女性は不可視
+
+    # 性別に応じた権限設定
+    if gender == "male" and male_role:
+        overwrites[male_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
         if female_role:
             overwrites[female_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-        # @everyone も不可視
-        overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-
-    elif gender == "female":
-        # 女性だけ可視
-        if female_role:
-            overwrites[female_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
+    elif gender == "female" and female_role:
+        overwrites[female_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
         if male_role:
             overwrites[male_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-        overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-
     elif gender == "all":
-        # 男性だけ可視
         if male_role:
             overwrites[male_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
-        # 女性も可視
         if female_role:
             overwrites[female_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
-        # @everyone も不可視
-        overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-        
-       # ▼▼▼ ここがポイント：ロール名の生成をハッシュ方式に変更 ▼▼▼
-    # 衝突を防ぎつつ、誰のロールかわからないように匿名性を担保
-    random_salt = secrets.token_hex(8)  # 乱数生成
+
+    # ハッシュ化された非表示ロール作成
+    random_salt = secrets.token_hex(8)
     raw_string = f"{random_salt}:{interaction.user.id}"
-    hashed = hashlib.sha256(raw_string.encode()).hexdigest()[:12]  # 先頭12文字にするなどお好みで
+    hashed = hashlib.sha256(raw_string.encode()).hexdigest()[:12]
     role_name = f"{hashed}"
+    
     try:
         hidden_role = await interaction.guild.create_role(
             name=role_name,
@@ -518,7 +524,8 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         logger.error(f"非表示ロールの作成に失敗: {str(e)}")
         await send_interaction_message(interaction, f"❌ ロールの作成に失敗しました: {str(e)}", ephemeral=True)
         return
-    
+
+    # ブラックリストユーザーに非表示ロール付与
     blacklisted_users = get_blacklist(interaction.user.id)
     for user_id in blacklisted_users:
         member = interaction.guild.get_member(user_id)
@@ -528,19 +535,16 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
                 logger.info(f"ユーザー {user_id} に非表示ロール '{role_name}' を付与しました")
             except Exception as e:
                 logger.error(f"ロール付与に失敗: {str(e)}")
-    
-    # 上で設定した overwrites をそのまま使いつつ、hidden_role だけ追加
+
+    # 非表示ロールと作成者権限を追加
     overwrites[hidden_role] = discord.PermissionOverwrite(
         read_messages=False, view_channel=False, connect=False
     )
-
-#作成者には常に可視
     overwrites[interaction.user] = discord.PermissionOverwrite(
-    view_channel=True,
-    read_messages=True,
-    connect=True
+        view_channel=True, read_messages=True, connect=True
     )
 
+    # チャンネル作成
     try:
         text_channel = await interaction.guild.create_text_channel(
             name=f"{room_name}-通話交渉",
@@ -556,53 +560,38 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         
         add_room(text_channel.id, voice_channel.id, interaction.user.id, hidden_role.id, gender, room_message)
         add_admin_log("部屋作成", interaction.user.id, None, f"テキスト:{text_channel.id} ボイス:{voice_channel.id}")
-        
-
 
         await send_interaction_message(interaction, 
             f"✅ 通話募集部屋を作成しました！\nテキスト: {text_channel.mention}\nボイス: {voice_channel.mention}",
             ephemeral=True
         )
 
-        # ▼▼▼ 作成者の性別を判定 ▼▼▼
-        male_role = discord.utils.get(interaction.guild.roles, name="男性")
-        female_role = discord.utils.get(interaction.guild.roles, name="女性")
-
+        # 作成者の性別判定
+        creator_gender_jp = "不明"
         if male_role in interaction.user.roles and female_role in interaction.user.roles:
             creator_gender_jp = "両方!?"
         elif male_role in interaction.user.roles:
             creator_gender_jp = "男性"
         elif female_role in interaction.user.roles:
             creator_gender_jp = "女性"
-        else:
-            creator_gender_jp = "不明"
 
-        # ▼▼▼ ロールメンション ▼▼▼
+        # 募集メッセージ作成
         notice_role = discord.utils.get(interaction.guild.roles, name="募集通知")
+        role_mention_str = notice_role.mention if notice_role else ""
 
-        role_mention_str = notice_role.mention
-
-        # ▼▼▼ 1回のメッセージでまとめて送信 ▼▼▼
-        message_text = (
-            f"{interaction.user.mention} さん（{creator_gender_jp}）が通話を募集中です！\n\n"
-        )
+        message_text = f"{interaction.user.mention} さん（{creator_gender_jp}）が通話を募集中です！\n\n"
+        
         if room_message:
             message_text += f"📝 募集の詳細\n{room_message}\n\n"
 
-        
-        # --- 性別ロールから自己紹介チャンネルを特定 ---
-        male_role = discord.utils.get(interaction.guild.roles, name="男性")
-        female_role = discord.utils.get(interaction.guild.roles, name="女性")
-
+        # 自己紹介チャンネルから情報取得
+        intro_channel_name = None
         if female_role in interaction.user.roles:
             intro_channel_name = "🚺自己紹介（女性）"
         elif male_role in interaction.user.roles:
             intro_channel_name = "🚹自己紹介（男性）"
-        else:
-            intro_channel_name = None
 
         intro_text = "自己紹介は記入されていません。"
-
         if intro_channel_name:
             intro_channel = discord.utils.get(interaction.guild.text_channels, name=intro_channel_name)
             if intro_channel:
@@ -611,48 +600,37 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
                         intro_text = f"自己紹介はこちら → {msg.jump_url}"
                         break
 
-        message_text += f"\n{intro_text}"   
+        message_text += f"\n{intro_text}"
         message_text += f"\n\n{role_mention_str}\n部屋の作成者は `/delete-room` コマンドでこの部屋を削除できます。\n\nこの部屋は「通話」を前提とした募集用です。\nDMでのやり取りのみが目的の方は利用をご遠慮ください。\nそのような行為を繰り返していると判断された場合、利用制限などの措置対象となります。"
-        allowed_mentions=discord.AllowedMentions(roles=True)
-        await text_channel.send(message_text)
+        
+        await text_channel.send(message_text, allowed_mentions=discord.AllowedMentions(roles=True))
 
     except Exception as e:
         logger.error(f"部屋の作成に失敗: {str(e)}")
-        await send_interaction_message(interaction, f" 部屋の作成に失敗しました: {str(e)}", ephemeral=True)
+        await send_interaction_message(interaction, f"❌ 部屋の作成に失敗しました: {str(e)}", ephemeral=True)
         try:
             await hidden_role.delete()
             logger.info(f"エラーのためロール '{role_name}' を削除しました")
         except Exception as e_del:
             logger.error(f"エラー後のロール削除に失敗: {str(e_del)}")
 
-#満室時に見えなくなる機能
-#出入りイベント
+# =====================================================
+# 満室管理機能
+# =====================================================
 @bot.event
 async def on_voice_state_update(member, before, after):
-    """
-    ボイスチャンネルへの入退出が発生するたびに呼び出される。
-    before.channel: 退出元のVC (Noneの可能性あり)
-    after.channel : 入室先のVC (Noneの可能性あり)
-    """
-    # 1. 退出先と入室先、両方をチェック
+    """ボイスチャンネルへの入退出処理"""
     channels_to_check = []
     if before.channel is not None:
         channels_to_check.append(before.channel)
     if after.channel is not None:
         channels_to_check.append(after.channel)
 
-    # 2. 各チャンネルで部屋の人数を再計算
     for ch in channels_to_check:
         await check_room_capacity(ch)
 
-#満室チェック
 async def check_room_capacity(voice_channel: discord.VoiceChannel):
-    """
-    部屋にいるメンバー（人間/ボット）を分けてカウントし、
-    - 人間が2人以上なら部屋を隠す
-    - 人数上限(user_limit)を「全メンバー数+1」にする
-    """
-    # DBで検索して、このチャンネルが "rooms" テーブルにあるかチェック
+    """部屋の人数チェックと満室処理"""
     with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -663,26 +641,25 @@ async def check_room_capacity(voice_channel: discord.VoiceChannel):
         row = cursor.fetchone()
 
     if not row:
-        return  # このチャンネルは「部屋」ではないので何もしない
+        return
 
     text_channel_id, creator_id, role_id, gender, details = row
 
-    # --- 人間だけカウント ---
+    # 人間だけカウント
     human_members = [m for m in voice_channel.members if not m.bot]
     human_count = len(human_members)
-
-    # --- Botだけカウント（必要なら） ---
+    
+    # Botカウント
     bot_members = [m for m in voice_channel.members if m.bot]
     bot_count = len(bot_members)
 
-    # 例: 人間2人以上なら「満室扱い」で隠す
+    # 人間2人以上なら満室として隠す
     if human_count >= 2:
         await hide_room(voice_channel, text_channel_id, role_id, creator_id)
     else:
         await show_room(voice_channel, text_channel_id, role_id, creator_id, gender)
     
-
-    # 例: 人数上限を「(人間+Bot) + 1」に設定
+    # 人数上限を設定
     total_count = human_count + bot_count
     new_limit = total_count + 1
     try:
@@ -691,30 +668,27 @@ async def check_room_capacity(voice_channel: discord.VoiceChannel):
     except Exception as e:
         logger.error(f"ボイスチャンネルの上限設定に失敗: {e}")
 
-#部屋を隠す        
 async def hide_room(voice_channel: discord.VoiceChannel, text_channel_id: int, role_id: int, creator_id: int):
-    """部屋を隠す処理。既存のコードに合わせてオーバーライド"""
+    """部屋を隠す処理"""
     text_channel = voice_channel.guild.get_channel(text_channel_id)
     hidden_role = voice_channel.guild.get_role(role_id) if role_id else None
-
     guild = voice_channel.guild
-    overwrites = {}
 
-    # 1. まずはデフォルトを「見えない」に
-    overwrites[guild.default_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
-    # BOTには操作権限が必要
-    overwrites[guild.me] = discord.PermissionOverwrite(read_messages=True, send_messages=True, connect=True)
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False, connect=False),
+        guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, connect=True)
+    }
 
-    # 2. hidden_role (ブラックリスト) は引き続き見えない
+    # ブラックリストロールは見えない
     if hidden_role:
         overwrites[hidden_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
 
-    # 3. 部屋作成者は常に見えるように
+    # 作成者は常に見える
     creator = guild.get_member(creator_id)
     if creator:
         overwrites[creator] = discord.PermissionOverwrite(read_messages=True, connect=True)
 
-    # 4. 現在ボイスチャンネルにいる人たち（Bot含む）も見えるように
+    # 現在ボイスチャンネルにいる人たちも見える
     for member in voice_channel.members:
         overwrites[member] = discord.PermissionOverwrite(read_messages=True, connect=True)
 
@@ -726,25 +700,23 @@ async def hide_room(voice_channel: discord.VoiceChannel, text_channel_id: int, r
     except Exception as e:
         logger.error(f"[hide_room] チャンネルの上書きに失敗: {e}")
 
-
 async def show_room(voice_channel: discord.VoiceChannel, text_channel_id: int, role_id: int, creator_id: int, gender: str):
-    """部屋を再び公開する処理。既存のコードに合わせてオーバーライド"""
+    """部屋を再び公開する処理"""
     text_channel = voice_channel.guild.get_channel(text_channel_id)
     hidden_role = voice_channel.guild.get_role(role_id) if role_id else None
-
     guild = voice_channel.guild
     male_role = discord.utils.get(guild.roles, name="男性")
     female_role = discord.utils.get(guild.roles, name="女性")
 
-    # 基本のOverwrites
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False, connect=False),
         guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, connect=True),
     }
+    
     if hidden_role:
         overwrites[hidden_role] = discord.PermissionOverwrite(read_messages=False, connect=False)
 
-    # 性別(gender)に応じた可視/不可視
+    # 性別に応じた可視設定
     if gender == "male":
         if male_role:
             overwrites[male_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
@@ -761,7 +733,7 @@ async def show_room(voice_channel: discord.VoiceChannel, text_channel_id: int, r
         if female_role:
             overwrites[female_role] = discord.PermissionOverwrite(read_messages=True, connect=True)
 
-        # ★ここで部屋作成者に対する権限を明示的に追加
+    # 作成者に対する権限を明示的に追加
     creator = guild.get_member(creator_id)
     if creator:
         overwrites[creator] = discord.PermissionOverwrite(
@@ -778,32 +750,35 @@ async def show_room(voice_channel: discord.VoiceChannel, text_channel_id: int, r
     except Exception as e:
         logger.error(f"[show_room] チャンネルの上書きに失敗: {e}")
 
-#部屋削除スラッシュコマンド
+# =====================================================
+# 部屋削除機能
+# =====================================================
 @bot.tree.command(name="delete-room", description="通話募集部屋を削除")
 async def delete_room(interaction: discord.Interaction):
+    """部屋削除コマンド"""
     creator_id, role_id, text_channel_id, voice_channel_id = get_room_info(interaction.channel.id)
+    
     if creator_id is None:
         await send_interaction_message(interaction, "このコマンドは通話募集部屋でのみ使用できます。", ephemeral=True)
         return
+    
     if creator_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
         await send_interaction_message(interaction, "部屋の作成者または管理者のみが部屋を削除できます。", ephemeral=True)
         return
 
     await send_interaction_message(interaction, "部屋を削除しています...", ephemeral=True)
 
-    # ---- テキストチャンネル削除 ----
+    # テキストチャンネル削除
     if text_channel_id:
         text_channel = interaction.guild.get_channel(text_channel_id)
-        if text_channel:
-            # 現在のチャンネルと同じ場合は後で削除
-            if text_channel.id != interaction.channel.id:
-                try:
-                    await text_channel.delete()
-                    logger.info(f"テキストチャンネル {text_channel_id} を削除しました")
-                except Exception as e:
-                    logger.error(f"テキストチャンネル {text_channel_id} の削除に失敗: {e}")
+        if text_channel and text_channel.id != interaction.channel.id:
+            try:
+                await text_channel.delete()
+                logger.info(f"テキストチャンネル {text_channel_id} を削除しました")
+            except Exception as e:
+                logger.error(f"テキストチャンネル {text_channel_id} の削除に失敗: {e}")
 
-    # ---- ボイスチャンネル削除 ----
+    # ボイスチャンネル削除
     if voice_channel_id:
         voice_channel = interaction.guild.get_channel(voice_channel_id)
         if voice_channel:
@@ -813,7 +788,7 @@ async def delete_room(interaction: discord.Interaction):
             except Exception as e:
                 logger.error(f"ボイスチャンネル {voice_channel_id} の削除に失敗: {e}")
 
-    # ---- ロール削除 ----
+    # ロール削除
     if role_id:
         role = interaction.guild.get_role(role_id)
         if role:
@@ -823,7 +798,7 @@ async def delete_room(interaction: discord.Interaction):
             except Exception as e:
                 logger.error(f"ロール {role_id} の削除に失敗: {e}")
 
-    # ---- 最後に「現在のチャンネル」だった場合の削除 ----
+    # 現在のチャンネルが削除対象の場合は最後に削除
     if interaction.channel.id == text_channel_id:
         try:
             await interaction.channel.delete()
@@ -831,38 +806,58 @@ async def delete_room(interaction: discord.Interaction):
         except Exception as e:
             logger.error(f"現在のチャンネル {interaction.channel.id} の削除に失敗: {e}")
 
-    # ---- roomsテーブルからも削除（remove_room） ----
-    remove_room(text_channel_id=text_channel_id)  # or voice_channel_id=... whichever
+    # データベースからも削除
+    remove_room(text_channel_id=text_channel_id)
     add_admin_log("部屋削除", interaction.user.id, creator_id, f"テキスト:{text_channel_id} ボイス:{voice_channel_id}")
 
 @bot.event
 async def on_guild_channel_delete(channel):
-    """チャンネルが削除された時の処理"""
-    if isinstance(channel, discord.VoiceChannel) or isinstance(channel, discord.TextChannel):
-        role_id, creator_id, other_channel_id = remove_room(
+    """チャンネル削除時の処理とカテゴリ自動削除"""
+    if isinstance(channel, (discord.VoiceChannel, discord.TextChannel)):
+        # データベースから部屋情報を削除
+        r_id, c_id, other_id = remove_room(
             text_channel_id=channel.id if isinstance(channel, discord.TextChannel) else None,
             voice_channel_id=channel.id if isinstance(channel, discord.VoiceChannel) else None
         )
-        if role_id:
-            role = channel.guild.get_role(role_id)
+        
+        # 関連ロール削除
+        if r_id:
+            role = channel.guild.get_role(r_id)
             if role:
                 try:
                     await role.delete()
-                    logger.info(f"チャンネル削除に伴いロール {role_id} を削除しました")
+                    logger.info(f"ロール {role.id} を削除しました")
                 except Exception as e:
-                    logger.error(f"ロール {role_id} の削除に失敗しました: {str(e)}")
-            if other_channel_id:
-                other_channel = channel.guild.get_channel(other_channel_id)
-                if other_channel:
-                    try:
-                        await other_channel.delete()
-                        logger.info(f"関連チャンネル {other_channel_id} を削除しました")
-                    except Exception as e:
-                        logger.error(f"関連チャンネル {other_channel_id} の削除に失敗しました: {str(e)}")
-            add_admin_log("自動部屋削除", None, creator_id, f"チャンネル:{channel.id}")
+                    logger.warning(f"ロール {role.id} の削除に失敗: {e}")
 
-#募集一覧機能ーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
+        # 関連チャンネル削除
+        if other_id:
+            other_channel = channel.guild.get_channel(other_id)
+            if other_channel:
+                try:
+                    await other_channel.delete()
+                    logger.info(f"関連チャンネル {other_id} を削除しました")
+                except Exception as e:
+                    logger.error(f"関連チャンネル {other_id} の削除に失敗: {e}")
+
+        # カテゴリの空判定と削除
+        category = channel.category
+        if category and len(category.channels) == 0:
+            try:
+                await category.delete()
+                logger.info(f"[DeleteCategory] {category.name}")
+            except discord.NotFound:
+                logger.warning(f"カテゴリ {category.name} は既に削除されているようです")
+            except Exception as e:
+                logger.warning(f"カテゴリ {category.name} の削除に失敗: {e}")
+
+        add_admin_log("自動部屋削除", None, c_id, f"channel={channel.id}")
+
+# =====================================================
+# 募集一覧機能
+# =====================================================
 class ShowRoomsView(discord.ui.View):
+    """募集一覧表示ボタンView"""
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -870,37 +865,16 @@ class ShowRoomsView(discord.ui.View):
     async def show_rooms_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await handle_show_rooms(interaction)
 
-def get_user_genders(member: discord.Member) -> set[str]:
-    """
-    ユーザーが閲覧できる gender のセットを返す。
-    例: 男性ロールがあれば {"male", "all"}、女性ロールがあれば {"female", "all"}、両方あれば {"male","female","all"}。
-    何もなければ空集合。
-    """
-    roleset = set()
-    male_role = discord.utils.get(member.roles, name="男性")
-    female_role = discord.utils.get(member.roles, name="女性")
-
-    if male_role:
-        roleset.add("male")
-    if female_role:
-        roleset.add("female")
-
-    # "all" は、いずれかのロールがある人は閲覧可能とする場合
-    if roleset:
-        roleset.add("all")
-
-    return roleset
-
-
 async def handle_show_rooms(interaction: discord.Interaction):
-    """押した人が閲覧できる募集一覧を表示する (ロール＋ブラックリスト制御)"""
+    """募集一覧を表示する処理"""
     member = interaction.user
     viewable_genders = get_user_genders(member)
+    
     if not viewable_genders:
         await send_interaction_message(interaction, "現在、募集はありません。", ephemeral=True)
         return
 
-    # ① DBから性別(gender)に合致する部屋一覧を取得
+    # DBから性別に合致する部屋一覧を取得
     with safe_db_context() as conn:
         cursor = conn.cursor()
         placeholders = ",".join("?" * len(viewable_genders))
@@ -924,43 +898,36 @@ async def handle_show_rooms(interaction: discord.Interaction):
 
     count = 0
     for (creator_id, text_channel_id, voice_channel_id, details, gender) in rows:
-        # ② 作成者のブラックリストを取得
+        # 作成者のブラックリストチェック
         creator_blacklist = get_blacklist(creator_id)
-        # ③ ボタンを押したユーザーがブラックリストに含まれているか？
         if member.id in creator_blacklist:
-            # 含まれていれば「この部屋は非表示」にする
             continue
 
+        # 満室チェック
         voice_channel = interaction.guild.get_channel(voice_channel_id)
         if voice_channel:
             human_members = [m for m in voice_channel.members if not m.bot]
             if len(human_members) >= 2:
-                continue  # 満室なので表示しない
+                continue
 
-        # ④ 通常の表示処理
+        # 表示処理
         creator = interaction.guild.get_member(creator_id)
         creator_name = creator.display_name if creator else f"UserID: {creator_id}"
         channel = interaction.guild.get_channel(text_channel_id)
         channel_mention = channel.mention if channel else f"#{text_channel_id} (削除済み)"
 
+        # 作成者の性別判定
         male_role = discord.utils.get(interaction.guild.roles, name="男性")
         female_role = discord.utils.get(interaction.guild.roles, name="女性")
-
-        # 省略
-            # ③ 作成者のロールを見て性別を判定
+        
+        creator_gender_jp = "不明"
         if creator:
-            # 両方持っているケースもあるかもしれないので一応分岐
             if male_role in creator.roles and female_role in creator.roles:
-                creator_gender_jp = "両方！？" 
+                creator_gender_jp = "両方！？"
             elif male_role in creator.roles:
                 creator_gender_jp = "男性"
             elif female_role in creator.roles:
                 creator_gender_jp = "女性"
-            else:
-                creator_gender_jp = "不明"
-        else:
-            creator_gender_jp = "不明"
-
 
         embed.add_field(
             name=f"募集者: {creator_name} / {creator_gender_jp}",
@@ -970,17 +937,17 @@ async def handle_show_rooms(interaction: discord.Interaction):
         count += 1
 
     if count == 0:
-        # ブラックリストチェックで全部スキップされた場合など
         await send_interaction_message(interaction, "現在、募集はありません。", ephemeral=True)
     else:
         await send_interaction_message(interaction, embed=embed, ephemeral=True)
 
-
-#管理者用コマンドーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーーー
+# =====================================================
+# 管理者用コマンド
+# =====================================================
 @bot.tree.command(name="setup-lobby", description="部屋作成ボタン付きメッセージを送信（管理者専用）")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_lobby(interaction: discord.Interaction):
-    """管理者向け: ボタン付きメッセージをチャンネルに設置"""
+    """部屋作成ボタン付きメッセージを設置"""
     view = GenderRoomView(timeout=None)
     text = (
         "## 📢募集開始ボタン\n"
@@ -992,14 +959,15 @@ async def setup_lobby(interaction: discord.Interaction):
 @bot.tree.command(name="setup-room-list-button", description="募集一覧を表示するボタンを設置（管理者用）")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_room_list_button(interaction: discord.Interaction):
-    """管理者向け: 募集一覧を表示するボタンを設置する"""
+    """募集一覧ボタンを設置"""
     view = ShowRoomsView()
     await interaction.channel.send("## 👀募集一覧ボタン\n現在の募集の一覧はこちらからどうぞ！\n", view=view)
     await send_interaction_message(interaction, "募集一覧ボタンを設置しました！", ephemeral=True)
 
-@bot.tree.command(name="setup-blacklist-help", description="ブラックリスト関連のコマンド一覧を全体向けのメッセージとして設置（管理者専用）")
+@bot.tree.command(name="setup-blacklist-help", description="ブラックリスト関連のコマンド一覧を設置（管理者専用）")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_blacklist_help(interaction: discord.Interaction):
+    """ブラックリストヘルプを設置"""
     embed = discord.Embed(
         title="ブラックリスト機能 コマンド一覧",
         description=(
@@ -1024,16 +992,15 @@ async def setup_blacklist_help(interaction: discord.Interaction):
         value="あなたのブラックリストに登録されているユーザー一覧を表示します。\n例: `/bl-list`",
         inline=False
     )
-    # 全体向けにメッセージを送信
+    
     await interaction.channel.send(embed=embed)
     await send_interaction_message(interaction, "ブラックリストコマンド一覧を設置しました。", ephemeral=True)
-
 
 @bot.tree.command(name="admin-logs", description="管理者ログを表示（管理者専用）")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(limit="表示する件数")
 async def admin_logs(interaction: discord.Interaction, limit: int = 10):
-    """管理者ログを表示（管理者専用）"""
+    """管理者ログを表示"""
     with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -1043,305 +1010,306 @@ async def admin_logs(interaction: discord.Interaction, limit: int = 10):
             LIMIT ?
         """, (limit,))
         logs = cursor.fetchall()
+    
     if not logs:
         await send_interaction_message(interaction, "ログはありません。", ephemeral=True)
         return
+    
     embed = discord.Embed(title="管理者ログ", color=discord.Color.blue())
     for i, (action, user_id, target_id, details, timestamp) in enumerate(logs):
         user = interaction.guild.get_member(user_id) if user_id else None
         target = interaction.guild.get_member(target_id) if target_id else None
         user_name = user.display_name if user else f"ID: {user_id}" if user_id else "システム"
         target_name = target.display_name if target else f"ID: {target_id}" if target_id else "なし"
+        
         embed.add_field(
             name=f"{i+1}. {action} ({timestamp})",
             value=f"実行者: {user_name}\n対象: {target_name}\n詳細: {details}",
             inline=False
         )
+    
     await send_interaction_message(interaction, embed=embed, ephemeral=True)
 
 @bot.tree.command(name="clear-rooms", description="全ての通話募集部屋を削除（管理者専用）")
 @app_commands.checks.has_permissions(administrator=True)
 async def clear_rooms(interaction: discord.Interaction):
-    """全ての通話募集部屋を削除（管理者専用）"""
+    """全ての通話募集部屋を削除"""
     with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT text_channel_id, voice_channel_id, role_id FROM rooms")
         rooms = cursor.fetchall()
+    
     if not rooms:
         await send_interaction_message(interaction, "削除する部屋はありません。", ephemeral=True)
         return
+    
     count = 0
     for text_channel_id, voice_channel_id, role_id in rooms:
         try:
+            # チャンネル削除
             text_channel = interaction.guild.get_channel(text_channel_id)
             if text_channel:
                 await text_channel.delete()
                 logger.info(f"テキストチャンネル {text_channel_id} を削除しました")
+            
             voice_channel = interaction.guild.get_channel(voice_channel_id)
             if voice_channel:
                 await voice_channel.delete()
                 logger.info(f"ボイスチャンネル {voice_channel_id} を削除しました")
+            
+            # ロール削除
             if role_id:
                 role = interaction.guild.get_role(role_id)
                 if role:
                     await role.delete()
                     logger.info(f"ロール {role_id} を削除しました")
+            
             count += 1
         except Exception as e:
             logger.error(f"部屋の削除に失敗: {str(e)}")
+    
+    # データベースクリア
     with safe_db_context() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM rooms")
-        
+    
     add_admin_log("全部屋削除", interaction.user.id, None, f"{count}個の部屋を削除")
     await send_interaction_message(interaction, f"✅ {count}個の部屋を削除しました。", ephemeral=True)
 
-
 @bot.tree.command(name="sync", description="スラッシュコマンドを手動で同期")
 async def sync(interaction: discord.Interaction):
+    """コマンド同期"""
     await bot.tree.sync()
     await send_interaction_message(interaction, "✅ コマンドを手動で同期しました！", ephemeral=True)
 
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.errors.MissingRequiredArgument):
-        await ctx.send(" コマンドの引数が不足しています。", ephemeral=True)
-    elif isinstance(error, commands.errors.MissingPermissions):
-        await ctx.send(" このコマンドを実行する権限がありません。", ephemeral=True)
-    elif isinstance(error, commands.errors.CommandNotFound):
-        pass
-    else:
-        logger.error(f"コマンドエラー: {str(error)}")
-        await ctx.send(f" エラーが発生しました: {str(error)}", ephemeral=True)
-
-#カテゴリ自動削除機能
-@bot.event
-async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
-    """
-    チャンネルが手動/管理者操作などで消されたとき
-    カテゴリが空なら削除。データベース管理のロールも消す
-    """
-    if isinstance(channel, discord.TextChannel) or isinstance(channel, discord.VoiceChannel):
-        r_id, c_id, other_id = remove_room(
-            text_channel_id=channel.id if isinstance(channel, discord.TextChannel) else None,
-            voice_channel_id=channel.id if isinstance(channel, discord.VoiceChannel) else None
-        )
-        # データベースから取れた role_id があれば削除
-        if r_id:
-            role = channel.guild.get_role(r_id)
-            if role:
-                try:
-                    await role.delete()
-                    logger.info(f"ロール {role.id} を削除しました")
-                except Exception as e:
-                    logger.warning(f"ロール {role.id} の削除に失敗: {e}")
-
-
-        # カテゴリの空判定と削除
-        cat = channel.category  # ここでとれる Category オブジェクト
-        if cat:
-            # まだギルドに存在しているかどうかを念のため再取得か、あるいは try/except で囲む
-            # いったん len(cat.channels) == 0 で空なら削除を試す
-            if len(cat.channels) == 0:
-                try:
-                    await cat.delete()
-                    logger.info(f"[DeleteCategory] {cat.name}")
-                except discord.NotFound:
-                    # 既に削除されているか、存在しなくなっている場合
-                    logger.warning(f"カテゴリ {cat.name} は既に削除されているようです")
-                except Exception as e:
-                    logger.warning(f"カテゴリ {cat.name} の削除に失敗: {e}")
-
-        add_admin_log("自動部屋削除", None, c_id, f"channel={channel.id}")
-
-#実行者名ログ機能
-@bot.event
-async def on_interaction(interaction: discord.Interaction):
-    """
-    すべてのインタラクション（スラッシュコマンド・ボタン・モーダルなど）を捕捉する。
-    """
-    # 1. スラッシュコマンドの場合
-    if interaction.type == discord.InteractionType.application_command:
-        # コマンド名を取得
-        command_name = interaction.command.name if interaction.command else "unknown"
-        user_id = interaction.user.id
-        user_name = interaction.user.display_name
-
-        # ログへ出力
-        logger.info(f"[CommandExecuted] {user_name}({user_id}) ran /{command_name}")
-        # DBへの管理者ログ記録もしたい場合
-        add_admin_log("Slashコマンド実行", user_id, details=f"/{command_name}")
-
-    # 2. ボタン（コンポーネント）操作の場合
-    elif interaction.type == discord.InteractionType.component:
-        # component_type=2 が「ボタン」、=3 が「セレクトメニュー」など
-        # custom_id にボタンごとのIDが入る
-        if interaction.data.get("component_type") == 2:  # 2 = Button
-            custom_id = interaction.data.get("custom_id", "unknown")
-            user_id = interaction.user.id
-            user_name = interaction.user.display_name
-
-            logger.info(f"[ButtonClicked] {user_name}({user_id}) pressed button custom_id={custom_id}")
-            add_admin_log("ボタンクリック", user_id, details=f"button_id={custom_id}")
-
-    # 3. それ以外（モーダル送信など）も必要ならここで判定する
-    # elif interaction.type == discord.InteractionType.modal_submit:
-    #     ...
-
-    # なお、必ず最後に `await bot.process_application_commands(interaction)` する必要はありません。
-
-
-
-# ▼▼ バックアップ先フォルダ名・バックアップを送るチャンネルIDなどを設定 ▼▼
-BACKUP_FOLDER = "backups"
-CHANNEL_ID_FOR_BACKUP = 123456789012345678  # ここをバックアップを送信したいチャンネルのIDに置き換え
-
-@tasks.loop(time=datetime.time(hour=12, minute=0, second=0))
-async def daily_backup_task():
-    """
-    毎日12:00に実行されるタスク。
-    1) ログファイル・DBファイルをバックアップ
-    2) 7日以上前のバックアップを削除
-    3) 指定チャンネルへバックアップファイルを送信
-    """
-    # === SQLiteログ削除（2週間前より前） ===
-    now = datetime.datetime.now()
-    cutoff_date = (now - datetime.timedelta(days=LOG_KEEP_DAYS)).isoformat()
+# =====================================================
+# バックアップ機能
+# =====================================================
+def check_backup_flag():
+    """今日のバックアップが既に実行されているかチェック"""
+    if not os.path.exists(BACKUP_FLAG_FILE):
+        return False
+    
     try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM admin_logs WHERE timestamp < ?", (cutoff_date,))
-        conn.commit()
-        print("古いログ削除完了")
+        with open(BACKUP_FLAG_FILE, 'r') as f:
+            flag_date = f.read().strip()
+        
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        return flag_date == today
     except Exception as e:
-        print(f"ログ削除中にエラー: {e}")
-    finally:
-        conn.close()
+        logger.error(f"フラグファイル読み込みエラー: {e}")
+        return False
 
-
-    # 1) バックアップファイルの作成
-    os.makedirs(BACKUP_FOLDER, exist_ok=True)
-
-    # タイムスタンプ（例: 2023-09-28_12-00-00）
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-    # バックアップ対象
-    log_file = "bot.log"
-    db_file  = "blacklist.db"
-
-    # 保存先ファイル名
-    backup_log_name = f"botlog_{timestamp}.log"
-    backup_db_name  = f"blacklist_{timestamp}.db"
-
+def set_backup_flag():
+    """今日の日付でバックアップフラグを設定"""
     try:
+        os.makedirs(BACKUP_FOLDER, exist_ok=True)
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        with open(BACKUP_FLAG_FILE, 'w') as f:
+            f.write(today)
+        logger.info(f"バックアップフラグを設定: {today}")
+    except Exception as e:
+        logger.error(f"フラグファイル書き込みエラー: {e}")
+
+def run_backup(force=False):
+    """バックアップ実行"""
+    # 強制実行でない場合は、今日既に実行済みかチェック
+    if not force and check_backup_flag():
+        logger.info("今日のバックアップは既に実行済みです。")
+        return True
+    
+    now = datetime.datetime.now()
+    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    
+    backup_log_name = f"botlog_{timestamp}.log"
+    backup_db_name = f"blacklist_{timestamp}.db"
+    
+    os.makedirs(BACKUP_FOLDER, exist_ok=True)
+    
+    # ファイルコピー
+    try:
+        log_file = "bot.log"
+        db_file = "blacklist.db"
+        
         if os.path.exists(log_file):
             shutil.copy2(log_file, os.path.join(BACKUP_FOLDER, backup_log_name))
         if os.path.exists(db_file):
             shutil.copy2(db_file, os.path.join(BACKUP_FOLDER, backup_db_name))
+        
+        logger.info("✅ バックアップ完了")
+        
+        # バックアップ成功時にフラグを設定
+        if not force:
+            set_backup_flag()
+            
     except Exception as e:
-        # バックアップ失敗時のログ
-        print(f"[BackupError] バックアップ中にエラー: {e}")
-        return
-
-    # 2) 7日以上前のバックアップを削除
-    #   ファイル名に含まれる日付から判断するか、ファイル作成日時から判断するかの2パターンあります。
-    #   ここでは「ファイルの作成日時(mtime)」を見て7日より古いものを消します。
-    now = datetime.datetime.now()
-    seven_days_ago = now - datetime.timedelta(days=7)
-
+        logger.error(f"[BackupError] バックアップ中にエラー: {e}")
+        return False
+    
+    # 古いファイル削除
+    cutoff = now - datetime.timedelta(days=LOG_KEEP_DAYS)
     for file_path in glob.glob(os.path.join(BACKUP_FOLDER, "*")):
+        # フラグファイルはスキップ
+        if file_path == BACKUP_FLAG_FILE:
+            continue
+            
         try:
             mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
-            if mtime < seven_days_ago:
+            if mtime < cutoff:
                 os.remove(file_path)
+                logger.info(f"🗑️ 削除: {file_path}")
         except Exception as e:
-            print(f"[CleanupError] 古いバックアップ削除時にエラー: {e}")
+            logger.error(f"[削除エラー] {file_path}: {e}")
+    
+    return True
 
-    # 3) ディスコードの特定チャンネルへバックアップファイルを送信
-    CHANNEL_ID_FOR_BACKUP = 1370282144181784616
-    channel = bot.get_channel(CHANNEL_ID_FOR_BACKUP)
-    if channel is None:
-        print(f"[BackupWarn] 指定チャンネル (ID={CHANNEL_ID_FOR_BACKUP}) が見つかりません。送信をスキップします。")
-        return
+class UtilityCog(commands.Cog):
+    """ユーティリティコマンド"""
+    def __init__(self, bot):
+        self.bot = bot
 
-    # バックアップしたファイルを添付して送信
-    # 複数ファイルをまとめて送りたい場合は、Fileオブジェクトをリスト化して send(files=...) が使えます。
-    files_to_send = []
-    backup_log_path = os.path.join(BACKUP_FOLDER, backup_log_name)
-    backup_db_path  = os.path.join(BACKUP_FOLDER, backup_db_name)
+    @app_commands.command(name="backup", description="手動でバックアップを実行します")
+    @app_commands.describe(force="今日既にバックアップ済みでも強制実行する")
+    async def backup(self, interaction: discord.Interaction, force: bool = False):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        
+        if not force and check_backup_flag():
+            await interaction.followup.send("⚠️ 今日のバックアップは既に実行済みです。強制実行する場合は `force: True` を指定してください。")
+            return
+        
+        result = run_backup(force=force)
+        if result:
+            await interaction.followup.send("✅ バックアップを完了しました。")
+        else:
+            await interaction.followup.send("❌ バックアップ中にエラーが発生しました。ログを確認してください。")
 
-    if os.path.exists(backup_log_path):
-        files_to_send.append(discord.File(backup_log_path))
-    if os.path.exists(backup_db_path):
-        files_to_send.append(discord.File(backup_db_path))
-
-    if files_to_send:
-        await channel.send(
-            content=f"バックアップ完了: {timestamp}\n古いバックアップ(7日以上)は自動削除しています。",
-            files=files_to_send
+    @app_commands.command(name="backup-status", description="バックアップ状況を確認します")
+    async def backup_status(self, interaction: discord.Interaction):
+        """バックアップ状況を表示"""
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        is_done_today = check_backup_flag()
+        
+        # 最新のバックアップファイルを検索
+        backup_files = []
+        if os.path.exists(BACKUP_FOLDER):
+            for file_path in glob.glob(os.path.join(BACKUP_FOLDER, "*.db")):
+                if os.path.basename(file_path) != os.path.basename(BACKUP_FLAG_FILE):
+                    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
+                    backup_files.append((file_path, mtime))
+        
+        backup_files.sort(key=lambda x: x[1], reverse=True)
+        
+        embed = discord.Embed(
+            title="📊 バックアップ状況",
+            color=discord.Color.green() if is_done_today else discord.Color.orange()
         )
-        # === ZIP作成 ===
+        
+        embed.add_field(
+            name="今日のバックアップ",
+            value="✅ 完了" if is_done_today else "❌ 未実行",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="日付",
+            value=today,
+            inline=True
+        )
+        
+        if backup_files:
+            latest_file, latest_time = backup_files[0]
+            embed.add_field(
+                name="最新のバックアップ",
+                value=f"{latest_time.strftime('%Y-%m-%d %H:%M:%S')}\n`{os.path.basename(latest_file)}`",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="バックアップファイル数",
+                value=f"{len(backup_files)}個",
+                inline=True
+            )
+        else:
+            embed.add_field(
+                name="最新のバックアップ",
+                value="バックアップファイルが見つかりません",
+                inline=False
+            )
+        
+        await interaction.followup.send(embed=embed)
+
+# =====================================================
+# 定期タスク
+# =====================================================
+@tasks.loop(time=datetime.time(hour=12, minute=0, second=0))
+async def daily_backup_task():
+    """毎日12:00に実行される自動バックアップタスク"""
+    logger.info("自動バックアップタスクが開始されました")
+    
+    # 今日既にバックアップが実行されているかチェック
+    if check_backup_flag():
+        logger.info("今日のバックアップは既に実行済みです。スキップします。")
+        return
+    
+    # SQLiteログ削除
     now = datetime.datetime.now()
-    timestamp = now.strftime("%Y%m%d_%H%M")
-    zip_name = f"{BACKUP_PREFIX}{timestamp}.zip"
-    zip_path = os.path.join(ZIP_DIR, zip_name)
-
-    with zipfile.ZipFile(zip_path, 'w') as zipf:
-        zipf.write(DB_FILE)
-
-    # === Google Drive認証・アップロード ===
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("mycreds.txt")
-    if not gauth.credentials:
-        gauth.LocalWebserverAuth()
-        gauth.SaveCredentialsFile("mycreds.txt")
-
-    drive = GoogleDrive(gauth)
-
-    file_drive = drive.CreateFile({'title': zip_name})
-    file_drive.SetContentFile(zip_path)
-    file_drive.Upload()
-
-    # === Google Drive: 古いファイル削除 ===
-    cutoff = now - datetime.timedelta(days=ZIP_KEEP_DAYS)
-    file_list = drive.ListFile({'q': f"title contains '{BACKUP_PREFIX}'"}).GetList()
-    for file in file_list:
-        try:
-            # タイトルから日付を抽出して判断（ファイル名形式が正しいこと前提）
-            date_str = file['title'].replace(BACKUP_PREFIX, "").replace(".zip", "")
-            file_time = datetime.strptime(date_str, "%Y%m%d_%H%M")
-            if file_time < cutoff:
-                file.Delete()
-                print(f"Deleted old backup: {file['title']}")
-        except Exception as e:
-            print(f"Skip deleting {file['title']}: {e}")
-
-@daily_backup_task.before_loop
-async def before_daily_backup_task():
-    """Botが起動し、準備ができるまで待機する"""
-    await bot.wait_until_ready()
-
-# on_ready のタイミングや、ファイル末尾などで起動時にタスクをスタート
-@bot.event
-async def on_ready():
-    logger.info(f'BOTにログインしました: {bot.user.name}')
-    print(f'BOTにログインしました: {bot.user.name}')
-    init_db()
-    if not daily_backup_task.is_running():
-        daily_backup_task.start()
-    if not keepalive_task.is_running():
-        keepalive_task.start()
+    cutoff_date = (now - datetime.timedelta(days=LOG_KEEP_DAYS)).isoformat()
+    
     try:
-        await bot.tree.sync()
-        logger.info("Slashコマンドの同期に成功しました。")
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM admin_logs WHERE timestamp < ?", (cutoff_date,))
+        deleted_count = cursor.rowcount
+        conn.commit()
+        logger.info(f"古いログ削除完了: {deleted_count}件")
     except Exception as e:
-        logger.error(f"Slashコマンドの同期に失敗: {e}")
-
-#生存報告機能
-KEEPALIVE_CHANNEL_ID = 1353622624860766308  # 任意のチャンネルID
+        logger.error(f"ログ削除中にエラー: {e}")
+    finally:
+        conn.close()
+    
+    # バックアップ実行
+    backup_success = run_backup(force=False)
+    if not backup_success:
+        logger.error("自動バックアップに失敗しました")
+        return
+    
+    # Discord チャンネルへ送信
+    channel = bot.get_channel(BACKUP_CHANNEL_ID)
+    if not channel:
+        logger.warning(f"バックアップチャンネルが見つかりません: ID={BACKUP_CHANNEL_ID}")
+        return
+    
+    try:
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # バックアップファイルを添付
+        files_to_send = []
+        backup_log_path = os.path.join(BACKUP_FOLDER, f"botlog_{timestamp}.log")
+        backup_db_path = os.path.join(BACKUP_FOLDER, f"blacklist_{timestamp}.db")
+        
+        if os.path.exists(backup_log_path):
+            files_to_send.append(discord.File(backup_log_path))
+        if os.path.exists(backup_db_path):
+            files_to_send.append(discord.File(backup_db_path))
+        
+        if files_to_send:
+            await channel.send(
+                content=f"🔄 自動バックアップ完了: {timestamp}\n古いバックアップ({LOG_KEEP_DAYS}日以上)は自動削除しています。",
+                files=files_to_send
+            )
+            logger.info("Discordチャンネルへのバックアップファイル送信完了")
+        else:
+            await channel.send(f"⚠️ バックアップは完了しましたが、送信するファイルが見つかりませんでした: {timestamp}")
+            
+    except Exception as e:
+        logger.error(f"Discordチャンネルへのバックアップファイル送信に失敗: {e}")
+        # 送信失敗でもバックアップ自体は成功しているので、エラーログのみ出力
 
 @tasks.loop(minutes=15)
 async def keepalive_task():
+    """15分間隔の生存報告タスク"""
     await bot.wait_until_ready()
     now = datetime.datetime.now().strftime("%m月%d日%H時%M分")
     channel = bot.get_channel(KEEPALIVE_CHANNEL_ID)
@@ -1350,12 +1318,86 @@ async def keepalive_task():
     else:
         logger.warning(f"生存報告チャンネルが見つかりません: ID={KEEPALIVE_CHANNEL_ID}")
 
-# トークン付与
-# .envファイルの読み込み
-load_dotenv()
+@daily_backup_task.before_loop
+async def before_daily_backup_task():
+    """バックアップタスク開始前の準備"""
+    await bot.wait_until_ready()
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-bot.run(TOKEN)
+# =====================================================
+# イベントハンドラー
+# =====================================================
+@bot.event
+async def on_ready():
+    """Bot起動時の処理"""
+    logger.info(f'BOTにログインしました: {bot.user.name}')
+    print(f'BOTにログインしました: {bot.user.name}')
+    
+    # 初期化
+    init_db()
+    daily_backup_task.start()
+    keepalive_task.start()
+    
+    # Cogの追加
+    await bot.add_cog(UtilityCog(bot))
+    
+    # コマンド同期
+    try:
+        await bot.tree.sync()
+        logger.info("Slashコマンドの同期に成功しました。")
+    except Exception as e:
+        logger.error(f"Slashコマンドの同期に失敗: {e}")
 
-# デバッグ出力
-# print(f"TOKEN: {TOKEN}")
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    """全てのインタラクションをログに記録"""
+    # スラッシュコマンドの場合
+    if interaction.type == discord.InteractionType.application_command:
+        command_name = interaction.command.name if interaction.command else "unknown"
+        user_id = interaction.user.id
+        user_name = interaction.user.display_name
+        
+        logger.info(f"[CommandExecuted] {user_name}({user_id}) ran /{command_name}")
+        add_admin_log("Slashコマンド実行", user_id, details=f"/{command_name}")
+    
+    # ボタン操作の場合
+    elif interaction.type == discord.InteractionType.component:
+        if interaction.data.get("component_type") == 2:  # Button
+            custom_id = interaction.data.get("custom_id", "unknown")
+            user_id = interaction.user.id
+            user_name = interaction.user.display_name
+            
+            logger.info(f"[ButtonClicked] {user_name}({user_id}) pressed button custom_id={custom_id}")
+            add_admin_log("ボタンクリック", user_id, details=f"button_id={custom_id}")
+
+@bot.event
+async def on_command_error(ctx, error):
+    """コマンドエラーハンドリング"""
+    if isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.send("❌ コマンドの引数が不足しています。", ephemeral=True)
+    elif isinstance(error, commands.errors.MissingPermissions):
+        await ctx.send("❌ このコマンドを実行する権限がありません。", ephemeral=True)
+    elif isinstance(error, commands.errors.CommandNotFound):
+        pass  # コマンドが見つからない場合は無視
+    else:
+        logger.error(f"コマンドエラー: {str(error)}")
+        await ctx.send(f"❌ エラーが発生しました: {str(error)}", ephemeral=True)
+
+# =====================================================
+# メイン実行部分
+# =====================================================
+if __name__ == "__main__":
+    # 環境変数の読み込み
+    load_dotenv()
+    
+    TOKEN = os.getenv("DISCORD_TOKEN")
+    
+    if not TOKEN:
+        logger.error("DISCORD_TOKENが設定されていません。.envファイルを確認してください。")
+        exit(1)
+    
+    # Bot実行
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        logger.error(f"Botの起動に失敗しました: {e}")
+        exit(1)
