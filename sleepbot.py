@@ -52,6 +52,12 @@ KEEPALIVE_CHANNEL_ID = 1353622624860766308
 BACKUP_CHANNEL_ID = 1370282144181784616
 
 # =====================================================
+# コマンド連打防止設定
+# =====================================================
+COMMAND_COOLDOWN_SECONDS = 5  # 同一ユーザーが同じコマンドを再実行するまでの待機秒数
+recent_interactions = {}
+
+# =====================================================
 # データベース関連
 # =====================================================
 from contextlib import contextmanager
@@ -1730,25 +1736,41 @@ async def on_ready():
 
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
-    """全てのインタラクションをログに記録"""
-    # スラッシュコマンドの場合
+    """全てのインタラクションをログに記録し、連続実行を制限"""
+    user_id = interaction.user.id
+
+    # --- 連打チェック ---
+    key = None
     if interaction.type == discord.InteractionType.application_command:
         command_name = interaction.command.name if interaction.command else "unknown"
-        user_id = interaction.user.id
-        user_name = interaction.user.display_name
-        
-        logger.info(f"[CommandExecuted] {user_name}({user_id}) ran /{command_name}")
+        key = (user_id, f"cmd:{command_name}")
+    elif interaction.type == discord.InteractionType.component and interaction.data.get("component_type") == 2:
+        custom_id = interaction.data.get("custom_id", "unknown")
+        key = (user_id, f"btn:{custom_id}")
+
+    if key:
+        now = datetime.datetime.now().timestamp()
+        last = recent_interactions.get(key, 0)
+        if now - last < COMMAND_COOLDOWN_SECONDS:
+            try:
+                await interaction.response.send_message(
+                    f"⏳ 同じ操作は{COMMAND_COOLDOWN_SECONDS}秒待ってから実行してください。",
+                    ephemeral=True,
+                )
+            except Exception as e:
+                logger.warning(f"クールダウン応答に失敗: {e}")
+            return
+        recent_interactions[key] = now
+
+    # --- ログ記録 ---
+    if interaction.type == discord.InteractionType.application_command:
+        logger.info(f"[CommandExecuted] {interaction.user.display_name}({user_id}) ran /{command_name}")
         add_admin_log("Slashコマンド実行", user_id, details=f"/{command_name}")
-    
-    # ボタン操作の場合
-    elif interaction.type == discord.InteractionType.component:
-        if interaction.data.get("component_type") == 2:  # Button
-            custom_id = interaction.data.get("custom_id", "unknown")
-            user_id = interaction.user.id
-            user_name = interaction.user.display_name
-            
-            logger.info(f"[ButtonClicked] {user_name}({user_id}) pressed button custom_id={custom_id}")
-            add_admin_log("ボタンクリック", user_id, details=f"button_id={custom_id}")
+    elif interaction.type == discord.InteractionType.component and interaction.data.get("component_type") == 2:
+        logger.info(f"[ButtonClicked] {interaction.user.display_name}({user_id}) pressed button custom_id={custom_id}")
+        add_admin_log("ボタンクリック", user_id, details=f"button_id={custom_id}")
+
+    await bot.process_application_commands(interaction)
 
 @bot.event
 async def on_command_error(ctx, error):
