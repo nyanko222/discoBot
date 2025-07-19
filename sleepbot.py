@@ -1619,12 +1619,20 @@ async def sync(interaction: discord.Interaction):
     await bot.tree.sync()
     await send_interaction_message(interaction, "✅ コマンドを手動で同期しました！", ephemeral=True)
 
+@bot.tree.command(name="backup-now", description="バックアップを手動で実行（管理者専用）")
+@app_commands.checks.has_permissions(administrator=True)
+async def backup_now(interaction: discord.Interaction):
+    """手動でバックアップを実行"""
+    await perform_backup()
+    add_admin_log("手動バックアップ", interaction.user.id)
+    await send_interaction_message(interaction, "✅ バックアップを実行しました。", ephemeral=True)
+
 # =====================================================
 # バックアップ機能
 # =====================================================
-@tasks.loop(time=datetime.time(hour=12, minute=0, second=0))
-async def daily_backup_task():
-    """毎日12:00に実行されるバックアップタスク"""
+
+async def perform_backup():
+    """バックアップ処理を実行"""
     now = datetime.datetime.now()
     logger.info(f"[DEBUG] backup_task 呼び出し {now}")
     
@@ -1688,6 +1696,11 @@ async def daily_backup_task():
             content=f"バックアップ完了: {timestamp}\n古いバックアップ(7日以上)は自動削除しています。",
             files=files_to_send
         )
+
+@tasks.loop(time=datetime.time(hour=12, minute=0, second=0))
+async def daily_backup_task():
+    """毎日12:00に実行されるバックアップタスク"""
+    await perform_backup()
 
 @daily_backup_task.before_loop
 async def before_daily_backup_task():
