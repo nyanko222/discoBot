@@ -376,6 +376,45 @@ class GenderRoomView(discord.ui.View):
         modal = RoomCreationModal(gender="all")
         await interaction.response.send_modal(modal)
 
+class CancelRequestView(discord.ui.View):
+    """入室希望取り消しボタン用View"""
+
+    def __init__(self, requester_id: int):
+        super().__init__(timeout=None)
+        self.requester_id = requester_id
+        self.message: discord.Message | None = None
+
+    @discord.ui.button(label="取り消す", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("❌ この操作は行えません。", ephemeral=True)
+            return
+
+        await interaction.response.send_message("✅ 取り消しました。", ephemeral=True)
+        if self.message:
+            try:
+                await self.message.delete()
+            except Exception as e:
+                logger.warning(f"入室希望メッセージ削除失敗: {e}")
+
+
+class TalkRequestView(discord.ui.View):
+    """入室希望ボタン設置用View"""
+
+    def __init__(self, creator: discord.Member):
+        super().__init__(timeout=None)
+        self.creator = creator
+
+    @discord.ui.button(label="話したい", style=discord.ButtonStyle.danger)
+    async def request(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cancel_view = CancelRequestView(interaction.user.id)
+        msg = await interaction.channel.send(
+            f"{self.creator.mention}さん、{interaction.user.mention}さんがお話してみたいそうです！",
+            view=cancel_view,
+        )
+        cancel_view.message = msg
+        await interaction.response.send_message("入室希望を送信しました。", ephemeral=True)
+
 async def create_room_with_gender(interaction: discord.Interaction, gender: str, capacity: int = 2, room_message: str = ""):
     """部屋作成のメイン処理"""
     # 既存部屋チェック
@@ -514,6 +553,13 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         message_text += f"\n\n{role_mention_str}\n部屋の作成者は `/delete-room` コマンドでこの部屋を削除できます。\n\nこの部屋は「通話」を前提とした募集用です。\nDMでのやり取りのみが目的の方は利用をご遠慮ください。\nそのような行為を繰り返していると判断された場合、利用制限などの措置対象となります。"
         
         await text_channel.send(message_text, allowed_mentions=discord.AllowedMentions(roles=True))
+
+        # 入室希望ボタンを配置
+        request_view = TalkRequestView(interaction.user)
+        await text_channel.send(
+            "話してみたい人はボタンを押してください",
+            view=request_view,
+        )
 
     except Exception as e:
         logger.error(f"部屋の作成に失敗: {str(e)}")
