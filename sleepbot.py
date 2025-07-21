@@ -41,14 +41,11 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 # 定数設定
 # =====================================================
 DB_PATH = 'blacklist.db'
-DB_FILE = "blacklist.db"
 ZIP_DIR = "./"
 BACKUP_PREFIX = "backup_"
 ZIP_KEEP_DAYS = 3
 LOG_KEEP_DAYS = 14
 BACKUP_FOLDER = "backups"
-BACKUP_FLAG_FILE = os.path.join("backups", ".backup_flag")
-KEEPALIVE_CHANNEL_ID = 1353622624860766308
 BACKUP_CHANNEL_ID = 1370282144181784616
 
 # =====================================================
@@ -60,8 +57,6 @@ recent_interactions = {}
 # =====================================================
 # データベース関連
 # =====================================================
-from contextlib import contextmanager
-
 @contextmanager
 def safe_db_context():
     """安全なデータベース接続のコンテキストマネージャー"""
@@ -197,8 +192,6 @@ def get_blacklist(owner_id):
         logger.error(f"ブラックリスト取得失敗: {owner_id} エラー: {e}")
         return []
 
-        return False
-
 
 # =====================================================
 # 汎用ヘルパー関数
@@ -264,6 +257,8 @@ def add_room(text_channel_id, voice_channel_id, creator_id, role_id, gender: str
                           (text_channel_id, voice_channel_id))
             check = cursor.fetchone()
             logger.info(f"[add_room] 登録確認: {check}")
+
+        return room_id
 
     except Exception as e:
         logger.error(f"部屋の登録に失敗: {str(e)}")
@@ -1720,7 +1715,6 @@ async def before_daily_backup_task():
 async def on_ready():
     """Bot起動時の処理"""
     logger.info(f'BOTにログインしました: {bot.user.name}')
-    print(f'BOTにログインしました: {bot.user.name}')
     
     # 初期化
     init_db()
