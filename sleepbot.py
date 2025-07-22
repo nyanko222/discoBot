@@ -678,6 +678,16 @@ async def hide_room(voice_channel: discord.VoiceChannel, text_channel_id: int, r
             view_channel=True, connect=True
         )
 
+    # ブラックリストユーザーも明示的にブロック
+    for user_id in set(get_blacklist(creator_id)):
+        obj = discord.Object(id=user_id)
+        text_overwrites[obj] = discord.PermissionOverwrite(
+            view_channel=False, read_messages=False, send_messages=False
+        )
+        voice_overwrites[obj] = discord.PermissionOverwrite(
+            view_channel=False, connect=False
+        )
+
     try:
         await text_channel.edit(overwrites=text_overwrites)
         await voice_channel.edit(overwrites=voice_overwrites)
@@ -734,28 +744,34 @@ async def show_room(voice_channel: discord.VoiceChannel, text_channel_id: int, r
         if text_channel:
             await text_channel.edit(overwrites=overwrites)
         await voice_channel.edit(overwrites=overwrites)
-        logger.info(f"[show_room] {text_channel_id} / {voice_channel.id} を再公開しました (gender={gender})")
+        logger.info(
+            f"[show_room] {text_channel_id} / {voice_channel.id} を再公開しました (gender={gender})"
+        )
     except Exception as e:
         logger.error(f"[show_room] チャンネルの上書きに失敗: {e}")
 
     # ブラックリスト再拒否（重要！）
     blacklisted_users = set(get_blacklist(creator_id))
+    call_count = 0
     for user_id in blacklisted_users:
-        user = guild.get_member(user_id)
-        if user:
-            for channel in [text_channel, voice_channel]:
-                try:
-                    await channel.set_permissions(
-                        user,
-                        view_channel=False,
-                        read_messages=False,
-                        send_messages=False,
-                        connect=False,
-                        reason="ブラックリスト拒否"
-                    )
-                    logger.info(f"ID'{user_id}'を再ブロックしました")
-                except Exception as e:
-                    logger.error(f"個別拒否失敗 {user.display_name}: {e}")
+        user = guild.get_member(user_id) or discord.Object(id=user_id)
+        for channel in filter(None, [text_channel, voice_channel]):
+            try:
+                await channel.set_permissions(
+                    user,
+                    view_channel=False,
+                    read_messages=False,
+                    send_messages=False,
+                    connect=False,
+                    reason="ブラックリスト拒否"
+                )
+                logger.info(f"ID'{user_id}'を再ブロックしました")
+            except Exception as e:
+                name = getattr(user, "display_name", str(user_id))
+                logger.error(f"個別拒否失敗 {name}: {e}")
+            call_count += 1
+            if call_count % 4 == 0:
+                await asyncio.sleep(1)
 
 # =====================================================
 # 部屋削除機能
