@@ -398,21 +398,32 @@ class CancelRequestView(discord.ui.View):
                 logger.warning(f"入室希望メッセージ削除失敗: {e}")
 
 
+
 class TalkRequestView(discord.ui.View):
     """入室希望ボタン設置用View"""
 
     def __init__(self, creator: discord.Member):
         super().__init__(timeout=None)
         self.creator = creator
+        self.requested_user_ids: set[int] = set()
 
     @discord.ui.button(label="話したい", style=discord.ButtonStyle.danger)
     async def request(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id in self.requested_user_ids:
+            await interaction.response.send_message(
+                "❌ 既に入室希望を送信しています。取り消す場合はメッセージの\"取り消す\"ボタンを押してください。",
+                ephemeral=True,
+            )
+            return
+
         cancel_view = CancelRequestView(interaction.user.id)
-        msg = await interaction.channel.send(
-            f"{self.creator.mention}さん、{interaction.user.mention}さんがお話してみたいそうです！",
-            view=cancel_view,
+        embed = discord.Embed(
+            description=f"{self.creator.mention}さん、{interaction.user.mention}さんがお話してみたいそうです！",
+            color=discord.Color.green(),
         )
+        msg = await interaction.channel.send(embed=embed, view=cancel_view)
         cancel_view.message = msg
+        self.requested_user_ids.add(interaction.user.id)
         await interaction.response.send_message("入室希望を送信しました。", ephemeral=True)
 
 async def create_room_with_gender(interaction: discord.Interaction, gender: str, capacity: int = 2, room_message: str = ""):
