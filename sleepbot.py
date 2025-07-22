@@ -568,7 +568,7 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
         # 入室希望ボタンを配置
         request_view = TalkRequestView(interaction.user)
         await text_channel.send(
-            "\n🔔話してみたい人はボタンを押してください",
+            "------------\n\n🔔話してみたい人はボタンを押してください",
             view=request_view,
         )
 
