@@ -550,14 +550,14 @@ async def create_room_with_gender(interaction: discord.Interaction, gender: str,
                         break
 
         message_text += f"\n{intro_text}"
-        message_text += f"\n\n{role_mention_str}\n部屋の作成者は `/delete-room` コマンドでこの部屋を削除できます。\n\nこの部屋は「通話」を前提とした募集用です。\nDMでのやり取りのみが目的の方は利用をご遠慮ください。\nそのような行為を繰り返していると判断された場合、利用制限などの措置対象となります。"
+        message_text += f"\n\n{role_mention_str}\n部屋の作成者は `/delete-room` コマンドでこの部屋を削除できます。\n\nこの部屋は「通話」を前提とした募集用です。\nDMでのやり取りのみが目的の方は利用をご遠慮ください。\nそのような行為を繰り返していると判断された場合、利用制限などの措置対象となります。\n"
         
         await text_channel.send(message_text, allowed_mentions=discord.AllowedMentions(roles=True))
 
         # 入室希望ボタンを配置
         request_view = TalkRequestView(interaction.user)
         await text_channel.send(
-            "話してみたい人はボタンを押してください",
+            "🔔話してみたい人はボタンを押してください",
             view=request_view,
         )
 
