@@ -417,11 +417,8 @@ class TalkRequestView(discord.ui.View):
             return
 
         cancel_view = CancelRequestView(interaction.user.id)
-        embed = discord.Embed(
-            description=f"{self.creator.mention}さん、{interaction.user.mention}さんがお話してみたいそうです！",
-            color=discord.Color.green(),
-        )
-        msg = await interaction.channel.send(embed=embed, view=cancel_view)
+        message = f"{self.creator.mention}さん、{interaction.user.mention}さんがお話してみたいそうです！"
+        msg = await interaction.channel.send(content=message, view=cancel_view)
         cancel_view.message = msg
         self.requested_user_ids.add(interaction.user.id)
         await interaction.response.send_message("入室希望を送信しました。", ephemeral=True)
@@ -1806,7 +1803,11 @@ async def on_interaction(interaction: discord.Interaction):
     # --- 連打チェック ---
     key = None
     if interaction.type == discord.InteractionType.application_command:
-        command_name = interaction.command.name if interaction.command else "unknown"
+        command = getattr(interaction, "command", None)
+        if command is not None:
+            command_name = command.name
+        else:
+            command_name = interaction.data.get("name", "unknown")
         key = (user_id, f"cmd:{command_name}")
     elif interaction.type == discord.InteractionType.component and interaction.data.get("component_type") == 2:
         custom_id = interaction.data.get("custom_id", "unknown")
