@@ -1800,6 +1800,7 @@ async def on_interaction(interaction: discord.Interaction):
     """全てのインタラクションをログに記録し、連続実行を制限"""
     user_id = interaction.user.id
     custom_id = interaction.data.get("custom_id", "unknown")
+    command_name = interaction.command.name if interaction.command else "unknown"
 
     # --- ログ記録 ---
     if interaction.type == discord.InteractionType.application_command:
