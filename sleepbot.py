@@ -417,11 +417,8 @@ class TalkRequestView(discord.ui.View):
             return
 
         cancel_view = CancelRequestView(interaction.user.id)
-        embed = discord.Embed(
-            description=f"{self.creator.mention}さん、{interaction.user.mention}さんがお話してみたいそうです！",
-            color=discord.Color.green(),
-        )
-        msg = await interaction.channel.send(embed=embed, view=cancel_view)
+        message = f"{self.creator.mention}さん、{interaction.user.mention}さんがお話してみたいそうです！"
+        msg = await interaction.channel.send(content=message, view=cancel_view)
         cancel_view.message = msg
         self.requested_user_ids.add(interaction.user.id)
         await interaction.response.send_message("入室希望を送信しました。", ephemeral=True)
@@ -1803,28 +1800,7 @@ async def on_interaction(interaction: discord.Interaction):
     """全てのインタラクションをログに記録し、連続実行を制限"""
     user_id = interaction.user.id
 
-    # --- 連打チェック (無効化) ---
-    # key = None
-    # if interaction.type == discord.InteractionType.application_command:
-    #     command_name = interaction.command.name if interaction.command else "unknown"
-    #     key = (user_id, f"cmd:{command_name}")
-    # elif interaction.type == discord.InteractionType.component and interaction.data.get("component_type") == 2:
-    #     custom_id = interaction.data.get("custom_id", "unknown")
-    #     key = (user_id, f"btn:{custom_id}")
 
-    # if key:
-    #     now = datetime.datetime.now().timestamp()
-    #     last = recent_interactions.get(key, 0)
-    #     if now - last < COMMAND_COOLDOWN_SECONDS:
-    #         try:
-    #             await interaction.response.send_message(
-    #                 f"⏳ 同じ操作は{COMMAND_COOLDOWN_SECONDS}秒待ってから実行してください。",
-    #                 ephemeral=True,
-    #             )
-    #         except Exception as e:
-    #             logger.warning(f"クールダウン応答に失敗: {e}")
-    #         return
-    #     recent_interactions[key] = now
 
     # --- ログ記録 ---
     if interaction.type == discord.InteractionType.application_command:
