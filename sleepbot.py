@@ -1810,7 +1810,6 @@ async def on_interaction(interaction: discord.Interaction):
         logger.info(f"[ButtonClicked] {interaction.user.display_name}({user_id}) pressed button custom_id={custom_id}")
         add_admin_log("ボタンクリック", user_id, details=f"button_id={custom_id}")
 
-    await bot.process_application_commands(interaction)
 
 @bot.event
 async def on_command_error(ctx, error):
