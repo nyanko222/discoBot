@@ -1358,7 +1358,7 @@ class PersonalBlacklistManageView(discord.ui.View):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
         
-    @discord.ui.button(label="確認", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="確認", style=discord.ButtonStyle.primary, row=2)
     async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.selected_users:
             await send_interaction_message(interaction, "⚠️ ユーザーが選択されていません。", ephemeral=True)
@@ -1380,7 +1380,7 @@ class PersonalBlacklistConfirmView(discord.ui.View):
         self.action = action
         self.users = users
 
-    @discord.ui.button(label="はい", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="はい", style=discord.ButtonStyle.danger, row=0)
     async def yes_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         already_in_list = []
         already_not_in_list = []
@@ -1412,7 +1412,7 @@ class PersonalBlacklistConfirmView(discord.ui.View):
 
         await send_interaction_message(interaction, msg, ephemeral=True)
 
-    @discord.ui.button(label="いいえ", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="いいえ", style=discord.ButtonStyle.secondary, row=1)
     async def no_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await send_interaction_message(interaction, "キャンセルしました。", ephemeral=True)
 
